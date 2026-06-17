@@ -1,0 +1,4 @@
+# Build a binary optimized for THIS machine's CPU (enables AVX2/FMA etc.).
+# This is what makes the release executable the "fastest format" on this host.
+[build]
+rustflags = ["-C", "target-cpu=native"]
