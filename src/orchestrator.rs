@@ -29,8 +29,7 @@ fn external_ids(labels: &[&'static str]) -> Vec<usize> {
     labels
         .iter()
         .enumerate()
-        .filter(|(_, l)| EXTERNAL_LABELS.contains(l))
-        .map(|(i, _)| i)
+        .filter_map(|(i, l)| EXTERNAL_LABELS.contains(l).then_some(i))
         .collect()
 }
 
@@ -235,30 +234,7 @@ fn run_interactive(
     // Stage 4: RENDER (ordered). Group banners + every section's output print
     // here in registration order. A section whose block was already shown
     // during a Stage 2 prompt prints only its result line.
-    let mut total = 0u64;
-    for slot in &layout {
-        match slot {
-            Slot::Group(name) => group(name),
-            Slot::Section(id) => {
-                let cell = &outcomes[*id];
-                if cell.empty {
-                    ui::emit(&cell.scan_output);
-                    continue;
-                }
-                if !shown[*id] {
-                    ui::emit(&cell.scan_output);
-                }
-                match &cell.outcome {
-                    Some(o) => {
-                        ui::emitln(&o.line);
-                        total += o.freed;
-                    }
-                    None => ui::emitln(&format!("  {DIM}skipped{RESET}")),
-                }
-            }
-        }
-    }
-    total
+    render_report(&layout, &outcomes, &shown)
 }
 
 /// The early-start pipeline (auto-yes / dry-run): brew and claude run on
@@ -278,15 +254,9 @@ fn run_early(
     let ext_ids = external_ids(&labels);
 
     // Partition scans into dedicated externals (pinned lanes) and the pool.
-    let mut dedicated: Vec<(usize, &'static str, ScanFn)> = Vec::new();
-    let mut pool_scans: Vec<(usize, &'static str, ScanFn)> = Vec::new();
-    for (id, label, f) in scans {
-        if ext_ids.contains(&id) {
-            dedicated.push((id, label, f));
-        } else {
-            pool_scans.push((id, label, f));
-        }
-    }
+    // `partition` preserves registration order within each side.
+    let (dedicated, pool_scans): (Vec<_>, Vec<_>) =
+        scans.into_iter().partition(|(id, _, _)| ext_ids.contains(id));
     let pinned = dedicated.len();
 
     // Lane tags: pinned externals first (in registration order), then the pool.
@@ -325,8 +295,8 @@ fn run_early(
         let mut ded_handles = Vec::new();
         for (lane, (id, label, f)) in dedicated.into_iter().enumerate() {
             let handle = s.spawn(move || {
-                let plan = f();
-                let scan_output = plan.scan_output.clone();
+                let mut plan = f();
+                let scan_output = std::mem::take(&mut plan.scan_output);
                 if plan.empty {
                     *cell_slots_ref[id].lock().unwrap() = Some(Cell {
                         empty: true,
@@ -442,8 +412,15 @@ fn run_early(
         .into_iter()
         .map(|m| m.into_inner().unwrap().unwrap())
         .collect();
+    render_report(&layout, &outcomes, &shown)
+}
+
+/// Stage RENDER, shared by both pipelines: print group banners and each
+/// section in canonical (registration) order, summing freed bytes. A section
+/// already shown during a confirm prompt prints only its result line.
+fn render_report(layout: &[Slot], outcomes: &[Cell], shown: &[bool]) -> u64 {
     let mut total = 0u64;
-    for slot in &layout {
+    for slot in layout {
         match slot {
             Slot::Group(name) => group(name),
             Slot::Section(id) => {
@@ -544,10 +521,10 @@ fn pool_execute(
                 loop {
                     let job = { queue.lock().unwrap().pop() };
                     match job {
-                        Some((id, label, plan)) => {
+                        Some((id, label, mut plan)) => {
                             let expected = baselines.lock().unwrap().get("exec", label);
                             tracker.start(pool_offset + core, label, expected);
-                            let scan_output = plan.scan_output.clone();
+                            let scan_output = std::mem::take(&mut plan.scan_output);
                             let t0 = Instant::now();
                             let outcome = execute(plan, dry_run);
                             let secs = t0.elapsed().as_secs_f64();

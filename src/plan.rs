@@ -257,11 +257,11 @@ pub fn scan_container_caches() -> Plan {
 
     let mut total = 0u64;
     let mut entries: Vec<(u64, PathBuf)> = Vec::new();
-    for d in &dirs {
-        let sz = fsutil::size_of(d);
+    for d in dirs {
+        let sz = fsutil::size_of(&d);
         if sz > 0 {
             total += sz;
-            entries.push((sz, d.clone()));
+            entries.push((sz, d));
         }
     }
     if total == 0 {
@@ -300,18 +300,21 @@ pub fn scan_container_caches() -> Plan {
     }
 }
 
+/// Immediate children of `dir` as paths; empty when `dir` can't be read.
+fn child_entries(dir: &std::path::Path) -> impl Iterator<Item = PathBuf> {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+}
+
 /// Enumerate one glob level: for each child of `parent`, join `tail`, keep dirs.
 fn glob_child_dirs(parent: &std::path::Path, tail: &str) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(parent) {
-        for entry in rd.flatten() {
-            let candidate = entry.path().join(tail);
-            if candidate.is_dir() {
-                out.push(candidate);
-            }
-        }
-    }
-    out
+    child_entries(parent)
+        .map(|c| c.join(tail))
+        .filter(|c| c.is_dir())
+        .collect()
 }
 
 /// Copilot scan: removes `~/.copilot` whole even at 0 bytes.
@@ -346,15 +349,9 @@ pub fn scan_nvim() -> Plan {
     if !root.is_dir() {
         return Plan::empty(format!("{DIM}[Neovim] no cache dir — skipping{RESET}\n"));
     }
-    let mut entries: Vec<PathBuf> = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(&root) {
-        for entry in rd.flatten() {
-            if entry.file_name() == "snacks" {
-                continue;
-            }
-            entries.push(entry.path());
-        }
-    }
+    let entries: Vec<PathBuf> = child_entries(&root)
+        .filter(|p| p.file_name() != Some(std::ffi::OsStr::new("snacks")))
+        .collect();
     if entries.is_empty() {
         return Plan::empty(format!(
             "{DIM}[Neovim] nothing to clean — skipping{RESET}\n"
@@ -376,12 +373,7 @@ pub fn scan_zed_languages() -> Plan {
             "{DIM}[Zed languages] no languages dir — skipping{RESET}\n"
         ));
     }
-    let mut entries: Vec<PathBuf> = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(&root) {
-        for entry in rd.flatten() {
-            entries.push(entry.path());
-        }
-    }
+    let entries: Vec<PathBuf> = child_entries(&root).collect();
     if entries.is_empty() {
         return Plan::empty(format!("{DIM}[Zed languages] empty — skipping{RESET}\n"));
     }

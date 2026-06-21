@@ -83,6 +83,15 @@ pub fn execute(plan: Plan, dry_run: bool) -> Outcome {
     }
 }
 
+/// Append a command's stdout then stderr to `line`, each output line indented.
+fn append_output(line: &mut String, output: &std::process::Output) {
+    for stream in [&output.stdout, &output.stderr] {
+        for l in String::from_utf8_lossy(stream).lines() {
+            line.push_str(&format!("    {l}\n"));
+        }
+    }
+}
+
 /// Standard "freed / would free" result for size-known deletions.
 fn simple(estimate: u64, dry_run: bool) -> Outcome {
     let line = if dry_run {
@@ -103,12 +112,7 @@ fn execute_brew(cache: PathBuf, before: u64, dry_run: bool) -> Outcome {
             .args(["cleanup", "--dry-run", "-s"])
             .output()
         {
-            for l in String::from_utf8_lossy(&o.stdout).lines() {
-                line.push_str(&format!("    {l}\n"));
-            }
-            for l in String::from_utf8_lossy(&o.stderr).lines() {
-                line.push_str(&format!("    {l}\n"));
-            }
+            append_output(&mut line, &o);
         }
         return Outcome {
             freed: 0,
@@ -180,12 +184,7 @@ fn execute_claude_versions(dry_run: bool) -> Outcome {
     }
     match Command::new("claude").arg("update").output() {
         Ok(o) => {
-            for l in String::from_utf8_lossy(&o.stdout).lines() {
-                line.push_str(&format!("    {l}\n"));
-            }
-            for l in String::from_utf8_lossy(&o.stderr).lines() {
-                line.push_str(&format!("    {l}\n"));
-            }
+            append_output(&mut line, &o);
             if !o.status.success() {
                 line.push_str(&format!(
                     "  {RED}claude update failed — aborting version cleanup{RESET}"
@@ -228,18 +227,14 @@ fn execute_claude_versions(dry_run: bool) -> Outcome {
         "  Current version: {BOLD}{current_name}{RESET} (will be kept)\n"
     ));
 
-    let mut total = 0u64;
-    let mut victims: Vec<PathBuf> = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(&versions_dir) {
-        for entry in rd.flatten() {
-            if entry.file_name() == current {
-                continue;
-            }
-            let path = entry.path();
-            total += fsutil::size_of(&path);
-            victims.push(path);
-        }
-    }
+    let victims: Vec<PathBuf> = std::fs::read_dir(&versions_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_name() != current)
+        .map(|e| e.path())
+        .collect();
+    let total: u64 = victims.iter().map(|p| fsutil::size_of(p)).sum();
     if victims.is_empty() {
         line.push_str(&format!(
             "  {DIM}only current version present — nothing to remove{RESET}"

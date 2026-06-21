@@ -66,11 +66,9 @@ fn path() -> PathBuf {
 fn merge(stored: &HashMap<String, f64>, measured: &HashMap<String, f64>) -> HashMap<String, f64> {
     let mut out = stored.clone();
     for (k, &m) in measured {
-        let v = match stored.get(k) {
-            Some(&old) => EMA_OLD_WEIGHT * old + (1.0 - EMA_OLD_WEIGHT) * m,
-            None => m,
-        };
-        out.insert(k.clone(), v);
+        out.entry(k.clone())
+            .and_modify(|old| *old = EMA_OLD_WEIGHT * *old + (1.0 - EMA_OLD_WEIGHT) * m)
+            .or_insert(m);
     }
     out
 }
