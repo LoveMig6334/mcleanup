@@ -212,6 +212,16 @@ fn main() {
         "HuggingFace hub cache (models, datasets, tokenizers)",
         &[".cache/huggingface"],
     );
+    reg.section(
+        "astropy",
+        "Astropy downloaded reference-data cache (IERS tables etc.; re-downloaded on next use)",
+        &[".cache/astropy"],
+    );
+    reg.section_silent(
+        "vllm-metal",
+        "vLLM compiled Metal kernel cache (recompiled on next run)",
+        &[".cache/vllm-metal"],
+    );
 
     reg.group("Editors & IDEs");
     reg.section(
@@ -228,6 +238,9 @@ fn main() {
             "Library/Application Support/Code/DawnGraphiteCache",
             "Library/Application Support/Code/DawnWebGPUCache",
             "Library/Application Support/Code/WebStorage",
+            "Library/Application Support/Code/Service Worker",
+            "Library/Application Support/Code/Session Storage",
+            "Library/Application Support/Code/blob_storage",
             "Library/Application Support/Code/logs",
             "Library/Application Support/Code/Crashpad/completed",
             "Library/Application Support/Code/Crashpad/pending",
@@ -264,6 +277,15 @@ fn main() {
         &[".local/share/nvim/site/parser"],
     );
     reg.section_silent(
+        "Neovim logs",
+        "Neovim LSP / Mason / runtime logs (recreated on next launch)",
+        &[
+            ".local/state/nvim/lsp.log",
+            ".local/state/nvim/mason.log",
+            ".local/state/nvim/nvim.log",
+        ],
+    );
+    reg.section_silent(
         "Xcode DerivedData",
         "Xcode per-project build intermediates (rebuilt on next build)",
         &["Library/Developer/Xcode/DerivedData"],
@@ -290,6 +312,8 @@ fn main() {
             "Library/Application Support/Google/Chrome/Default/GPUCache",
             "Library/Application Support/Google/Chrome/Default/DawnGraphiteCache",
             "Library/Application Support/Google/Chrome/Default/DawnWebGPUCache",
+            "Library/Application Support/Google/Chrome/WasmTtsEngine",
+            "Library/Application Support/Google/Chrome/OnDeviceHeadSuggestModel",
         ],
     );
     reg.section(
@@ -359,6 +383,21 @@ fn main() {
     );
     reg.claude_versions();
     reg.copilot();
+    reg.section(
+        "Claude Code plugins",
+        "Claude Code plugin content + catalog caches (re-fetched on demand; keeps installed_plugins.json)",
+        &[".claude/plugins/cache", ".claude/plugins/plugin-catalog-cache.json"],
+    );
+    reg.section(
+        "opencode cache",
+        "opencode AI agent downloaded LSP servers + plugin/model cache (re-downloaded on demand)",
+        &[".cache/opencode"],
+    );
+    reg.section_silent(
+        "opencode logs",
+        "opencode logs + captured tool output (transient)",
+        &[".local/share/opencode/log", ".local/share/opencode/tool-output"],
+    );
 
     reg.group("Shell & terminal");
     reg.section(
@@ -375,6 +414,20 @@ fn main() {
         "starship",
         "Starship prompt module cache",
         &[".cache/starship"],
+    );
+    reg.section_silent(
+        "herdr logs",
+        "herdr terminal-agent server/client logs (recreated on next run; keeps config + sessions)",
+        &[
+            ".config/herdr/herdr-server.log",
+            ".config/herdr/herdr-client.log",
+            ".config/herdr/opencode-debug.log",
+        ],
+    );
+    reg.section_silent(
+        "btop log",
+        "btop++ runtime log (recreated on next run)",
+        &[".local/state/btop.log"],
     );
 
     reg.group("System catch-alls");
