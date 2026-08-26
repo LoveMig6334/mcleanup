@@ -92,7 +92,8 @@ pub fn execute(plan: Plan, dry_run: bool) -> Outcome {
 /// Delete every `workspaces` row (FK cascade wipes the per-workspace pane /
 /// item / bookmark rows too — Zed's schema declares `ON DELETE CASCADE`, but
 /// SQLite only honours it with `foreign_keys=ON`, which is per-connection, hence
-/// the PRAGMA). Then drop the Dock recents file. Never deletes the db itself:
+/// the PRAGMA). Then drop the Dock recents file and bounce `sharedfilelistd`
+/// so the Dock stops serving its cached copy. Never deletes the db itself:
 /// vim marks, toolchains, kv settings and agent threads live in the same file.
 fn execute_zed_history(
     dbs: &[PathBuf],
@@ -126,6 +127,18 @@ fn execute_zed_history(
         }
     }
     if let Some(s) = sfl {
+        // `sharedfilelistd` serves the Dock's "Open Recent" menu from an
+        // in-memory copy and rewrites the .sfl4 on its own schedule, so deleting
+        // the file alone changes nothing visible. Kill the daemon (launchd
+        // respawns it on demand, re-reading from disk) and delete again in case
+        // it flushed its cache on the way out.
+        fsutil::remove_path(s);
+        let _ = Command::new("/usr/bin/killall")
+            .arg("sharedfilelistd")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        std::thread::sleep(std::time::Duration::from_millis(300));
         fsutil::remove_path(s);
     }
     Outcome {

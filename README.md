@@ -64,7 +64,8 @@ Sections are grouped by domain:
 - **Editors & IDEs** — VSCode caches, Zed logs/caches, Neovim caches/logs,
   tree-sitter parsers, Xcode DerivedData, and (with confirmation) Zed language
   servers, Zed history (recent-projects list in the app and in the Dock's
-  "Open Recent"; window layouts go with it, everything else in Zed's db stays)
+  "Open Recent" — restarts `sharedfilelistd` so the Dock menu actually
+  empties; window layouts go with it, everything else in Zed's db stays)
   and Copilot embeddings.
 - **Browsers** — Chrome/Google HTTP, service-worker, shader, and on-device-model
   caches; Safari container caches (keeps bookmarks/history).
