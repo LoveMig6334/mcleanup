@@ -9,7 +9,7 @@ use crate::plan::{
     Plan, SectionOpts, paths, scan_brew, scan_claude_versions, scan_container_caches,
     scan_contents_of, scan_copilot, scan_darwin_cache, scan_dsstore, scan_http_storages,
     scan_next_build, scan_npm, scan_nvim, scan_project_scratch, scan_section, scan_simctl_prune,
-    scan_simulator_caches, scan_zed_languages,
+    scan_simulator_caches, scan_zed_history, scan_zed_languages,
 };
 use crate::progress::Tracker;
 use crate::ui::{self, DIM, RESET, group};
@@ -144,6 +144,9 @@ impl Registry {
     }
     pub fn zed_languages(&mut self) {
         self.push("Zed languages", Box::new(scan_zed_languages));
+    }
+    pub fn zed_history(&mut self) {
+        self.push("Zed history", Box::new(scan_zed_history));
     }
     pub fn simulator_caches(&mut self) {
         self.push("Simulator caches", Box::new(scan_simulator_caches));

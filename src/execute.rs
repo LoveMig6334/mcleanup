@@ -83,6 +83,54 @@ pub fn execute(plan: Plan, dry_run: bool) -> Outcome {
         Action::SimctlPrune { devices, before } => {
             execute_simctl_prune(devices, before, plan.estimate, dry_run)
         }
+        Action::ZedHistory { dbs, sfl, rows } => {
+            execute_zed_history(&dbs, sfl.as_deref(), rows, plan.estimate, dry_run)
+        }
+    }
+}
+
+/// Delete every `workspaces` row (FK cascade wipes the per-workspace pane /
+/// item / bookmark rows too — Zed's schema declares `ON DELETE CASCADE`, but
+/// SQLite only honours it with `foreign_keys=ON`, which is per-connection, hence
+/// the PRAGMA). Then drop the Dock recents file. Never deletes the db itself:
+/// vim marks, toolchains, kv settings and agent threads live in the same file.
+fn execute_zed_history(
+    dbs: &[PathBuf],
+    sfl: Option<&std::path::Path>,
+    rows: usize,
+    estimate: u64,
+    dry_run: bool,
+) -> Outcome {
+    let dock = if sfl.is_some() { " + Dock recents" } else { "" };
+    if dry_run {
+        return Outcome {
+            freed: estimate,
+            line: format!(
+                "  {YELLOW}[dry-run] would forget {rows} recent projects{dock}{RESET}"
+            ),
+        };
+    }
+    let mut cleared = 0usize;
+    for db in dbs {
+        let before = crate::plan::zed_workspace_rows(db);
+        let ok = Command::new("/usr/bin/sqlite3")
+            .arg(db)
+            .arg("PRAGMA foreign_keys=ON; DELETE FROM workspaces;")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ok {
+            cleared += before - crate::plan::zed_workspace_rows(db);
+        }
+    }
+    if let Some(s) = sfl {
+        fsutil::remove_path(s);
+    }
+    Outcome {
+        freed: estimate,
+        line: format!("  {GREEN}✓ forgot {cleared} recent projects{dock}{RESET}"),
     }
 }
 
@@ -330,5 +378,63 @@ mod tests {
         assert!(!kill.exists());
         assert!(keep.exists());
         assert!(!dir.path().join("sub").exists(), "empty dir pruned");
+    }
+
+    /// Mini replica of Zed's schema: `panes` cascades from `workspaces`.
+    fn zed_like_db(dir: &std::path::Path) -> PathBuf {
+        let db = dir.join("db.sqlite");
+        let sql = "CREATE TABLE workspaces(workspace_id INTEGER PRIMARY KEY, paths TEXT); \
+                   CREATE TABLE panes(pane_id INTEGER PRIMARY KEY, workspace_id INTEGER \
+                     REFERENCES workspaces(workspace_id) ON DELETE CASCADE); \
+                   INSERT INTO workspaces VALUES (1,'/a'),(2,'/b'); \
+                   INSERT INTO panes VALUES (10,1),(11,2);";
+        let ok = Command::new("/usr/bin/sqlite3")
+            .arg(&db)
+            .arg(sql)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+        db
+    }
+
+    fn count(db: &std::path::Path, table: &str) -> usize {
+        let o = Command::new("/usr/bin/sqlite3")
+            .arg(db)
+            .arg(format!("SELECT count(*) FROM {table};"))
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&o.stdout).trim().parse().unwrap()
+    }
+
+    #[test]
+    fn execute_zed_history_clears_rows_cascades_and_removes_sfl() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = zed_like_db(dir.path());
+        let sfl = dir.path().join("dev.zed.zed.sfl4");
+        std::fs::write(&sfl, b"recents").unwrap();
+        assert_eq!(crate::plan::zed_workspace_rows(&db), 2);
+
+        let action = Action::ZedHistory {
+            dbs: vec![db.clone()],
+            sfl: Some(sfl.clone()),
+            rows: 2,
+        };
+        let out = execute(plan_with(action, 7), true);
+        assert!(out.line.contains("would forget 2 recent projects + Dock recents"));
+        assert_eq!(count(&db, "workspaces"), 2, "dry-run must not mutate");
+        assert!(sfl.exists());
+
+        let action = Action::ZedHistory {
+            dbs: vec![db.clone()],
+            sfl: Some(sfl.clone()),
+            rows: 2,
+        };
+        let out = execute(plan_with(action, 7), false);
+        assert!(out.line.contains("forgot 2 recent projects + Dock recents"));
+        assert_eq!(count(&db, "workspaces"), 0);
+        assert_eq!(count(&db, "panes"), 0, "FK cascade must fire");
+        assert!(!sfl.exists());
+        assert!(db.exists(), "the db file itself must survive");
     }
 }

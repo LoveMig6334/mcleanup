@@ -26,7 +26,8 @@ fn print_help() {
     ui::emitln("    -h, --help           Show this help and exit");
     ui::emitln("");
     ui::emitln("By default mcleanup cleans without prompting. The costly-to-rebuild");
-    ui::emitln("sections (huggingface, rtmlib, Zed languages, VSCode Copilot embeddings)");
+    ui::emitln("sections (huggingface, rtmlib, Zed languages, Zed history, VSCode Copilot");
+    ui::emitln("embeddings)");
     ui::emitln("still ask before deleting. Press Ctrl+C at any time to abort.");
 }
 
@@ -69,7 +70,7 @@ fn main() {
     ui::emitln("");
     ui::emitln("Tips:");
     ui::emitln(&format!(
-        "  • Quit {BOLD}VSCode{RESET}, {BOLD}Discord{RESET}, {BOLD}Chrome{RESET}, {BOLD}Safari{RESET}, {BOLD}Claude Desktop{RESET} first for cleanest results"
+        "  • Quit {BOLD}VSCode{RESET}, {BOLD}Zed{RESET}, {BOLD}Discord{RESET}, {BOLD}Chrome{RESET}, {BOLD}Safari{RESET}, {BOLD}Claude Desktop{RESET} first for cleanest results"
     ));
     if yes {
         ui::emitln("  • Auto-yes is the default — press Ctrl+C to abort");
@@ -266,6 +267,7 @@ fn main() {
         ],
     );
     reg.zed_languages();
+    reg.zed_history();
     reg.nvim();
     reg.section(
         "Neovim snacks",

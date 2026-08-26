@@ -33,10 +33,11 @@ is what lets everything run in parallel while output stays in registration order
 - **`plan.rs`** — the scan phase. Each section returns a `Plan { scan_output,
   opts, prompt, estimate, action, empty }`. `Action` is the enum execute
   dispatches on (`RemovePaths`, `WipeContents`, `WipeEach`, `DeleteFiles`,
-  `RemoveDir`, `Brew`, `Npm`, `ClaudeVersions`, `SimctlPrune`). Contains the
+  `RemoveDir`, `Brew`, `Npm`, `ClaudeVersions`, `SimctlPrune`, `ZedHistory`). Contains the
   custom scanners (`scan_brew`, `scan_npm`, `scan_claude_versions`,
   `scan_dsstore`, `scan_http_storages`, `scan_container_caches`, `scan_copilot`,
-  `scan_nvim`, `scan_zed_languages`, `scan_contents_of`, `scan_simulator_caches`,
+  `scan_nvim`, `scan_zed_languages`, `scan_zed_history` (SQL `DELETE` via
+  `/usr/bin/sqlite3`, never the db file), `scan_contents_of`, `scan_simulator_caches`,
   `scan_simctl_prune`, `scan_next_build`, `scan_project_scratch`,
   `scan_darwin_cache`). `PROJECT_ROOT` (`~/Dev`) bounds every source-tree scan.
 - **`execute.rs`** — mutating phase. `execute(plan, dry_run) -> Outcome { freed,

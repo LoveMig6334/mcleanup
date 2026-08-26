@@ -45,10 +45,10 @@ mcleanup --help          # -h  show help
 
 By default `mcleanup` cleans without prompting. **Always start with `--dry-run`**
 to see exactly what a run would remove. A few costly-to-rebuild sections
-(huggingface, rtmlib, Zed languages, VSCode Copilot embeddings) prompt for
+(huggingface, rtmlib, Zed languages, Zed history, VSCode Copilot embeddings) prompt for
 confirmation even under auto-yes. Press `Ctrl+C` at any time to abort.
 
-For the cleanest results, quit VSCode, Discord, Chrome, Safari, and Claude Desktop
+For the cleanest results, quit VSCode, Zed, Discord, Chrome, Safari, and Claude Desktop
 first — running apps hold cache files open and recreate them immediately.
 
 ## What it cleans
@@ -63,7 +63,9 @@ Sections are grouped by domain:
   hub, astropy, vllm-metal, and (with confirmation) rtmlib + HuggingFace hub.
 - **Editors & IDEs** — VSCode caches, Zed logs/caches, Neovim caches/logs,
   tree-sitter parsers, Xcode DerivedData, and (with confirmation) Zed language
-  servers and Copilot embeddings.
+  servers, Zed history (recent-projects list in the app and in the Dock's
+  "Open Recent"; window layouts go with it, everything else in Zed's db stays)
+  and Copilot embeddings.
 - **Browsers** — Chrome/Google HTTP, service-worker, shader, and on-device-model
   caches; Safari container caches (keeps bookmarks/history).
 - **Apps** — Discord, Bambu Studio, Claude Desktop HTTP/GPU/code caches and logs.

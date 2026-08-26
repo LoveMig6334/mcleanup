@@ -48,6 +48,14 @@ pub enum Action {
     ClaudeVersions,
     /// `xcrun simctl delete unavailable`; `devices` measured before for the delta.
     SimctlPrune { devices: PathBuf, before: u64 },
+    /// Zed history: `DELETE FROM workspaces` in each `db.sqlite` (cascades to
+    /// panes/items/etc.) + remove the macOS Dock "Open Recent" list for Zed.
+    ZedHistory {
+        dbs: Vec<PathBuf>,
+        /// `(path, row count)` is only known for `dbs`; this is the sfl4 file.
+        sfl: Option<PathBuf>,
+        rows: usize,
+    },
 }
 
 /// The result of scanning one section.
@@ -394,6 +402,102 @@ pub fn scan_zed_languages() -> Plan {
         },
         entries,
     )
+}
+
+/// Zed's per-release SQLite state dirs, e.g. `db/0-stable`, `db/0-preview`.
+/// Only dirs holding a `workspaces` table matter; `0-global` has none.
+fn zed_db_files() -> Vec<PathBuf> {
+    let root = home().join("Library/Application Support/Zed/db");
+    let mut v: Vec<PathBuf> = child_entries(&root)
+        .map(|d| d.join("db.sqlite"))
+        .filter(|f| f.is_file())
+        .collect();
+    v.sort();
+    v
+}
+
+/// The Dock / Apple-menu "Open Recent" list macOS keeps per app bundle id.
+/// Zed's is `dev.zed.zed.sfl4`; macOS silently recreates it on next launch.
+pub fn zed_recent_sfl() -> PathBuf {
+    home().join(
+        "Library/Application Support/com.apple.sharedfilelist/\
+         com.apple.LSSharedFileList.ApplicationRecentDocuments/dev.zed.zed.sfl4",
+    )
+}
+
+/// `SELECT count(*) FROM workspaces` via `/usr/bin/sqlite3` (ships with macOS).
+/// Errors (no table, locked db, no binary) read as 0 so the section just skips.
+pub fn zed_workspace_rows(db: &std::path::Path) -> usize {
+    std::process::Command::new("/usr/bin/sqlite3")
+        .arg(db)
+        .arg("SELECT count(*) FROM workspaces;")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
+        .unwrap_or(0)
+}
+
+/// Zed history: recent-projects rows + the Dock "Open Recent" list. Zero bytes
+/// freed in practice — this is a privacy/declutter section, not a space one —
+/// so it is force-confirm and warns that window layouts go with it.
+pub fn scan_zed_history() -> Plan {
+    let dbs = zed_db_files();
+    let sfl = Some(zed_recent_sfl()).filter(|p| p.is_file());
+    let per_db: Vec<(PathBuf, usize)> = dbs
+        .into_iter()
+        .map(|d| {
+            let n = zed_workspace_rows(&d);
+            (d, n)
+        })
+        .filter(|(_, n)| *n > 0)
+        .collect();
+    let rows: usize = per_db.iter().map(|(_, n)| n).sum();
+    if rows == 0 && sfl.is_none() {
+        return Plan::empty(format!(
+            "{DIM}[Zed history] no recent projects — skipping{RESET}\n"
+        ));
+    }
+    let opts = SectionOpts {
+        warn: Some(
+            "quit Zed first; also forgets saved window layouts / open tabs per project",
+        ),
+        force_confirm: true,
+        silent_if_empty: false,
+    };
+    let mut out = String::new();
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "{BOLD}{CYAN}[Zed history]{RESET} recent-projects list (in-app + Dock \"Open Recent\")"
+    );
+    for (d, n) in &per_db {
+        let _ = writeln!(out, "    {DIM}{}{RESET}  ({n} projects)", d.display());
+    }
+    if let Some(s) = &sfl {
+        let _ = writeln!(
+            out,
+            "    {DIM}{}{RESET}  ({})",
+            s.display(),
+            human(fsutil::size_of(s))
+        );
+    }
+    let _ = writeln!(out, "  {YELLOW}Warning: {}{RESET}", opts.warn.unwrap());
+    let _ = writeln!(
+        out,
+        "  {DIM}(this prompt always asks, even with --yes){RESET}"
+    );
+    Plan {
+        scan_output: out,
+        opts,
+        prompt: "  Clear Zed history?".to_string(),
+        estimate: sfl.as_ref().map(|s| fsutil::size_of(s)).unwrap_or(0),
+        action: Action::ZedHistory {
+            dbs: per_db.into_iter().map(|(d, _)| d).collect(),
+            sfl,
+            rows,
+        },
+        empty: false,
+    }
 }
 
 /// Homebrew scan: check installed + measure cache.
