@@ -80,6 +80,9 @@ pub fn execute(plan: Plan, dry_run: bool) -> Outcome {
             npx_sz,
         } => execute_npm(cacache, logs, npx, before, logs_sz, npx_sz, dry_run),
         Action::ClaudeVersions => execute_claude_versions(dry_run),
+        Action::SimctlPrune { devices, before } => {
+            execute_simctl_prune(devices, before, plan.estimate, dry_run)
+        }
     }
 }
 
@@ -158,6 +161,31 @@ fn execute_npm(
     fsutil::remove_path(&npx);
     let after = fsutil::size_of(&cacache);
     let saved = sum.saturating_sub(after);
+    Outcome {
+        freed: saved,
+        line: format!("  {GREEN}✓ freed {}{RESET}", human(saved)),
+    }
+}
+
+/// `xcrun simctl delete unavailable`. Devices with a live runtime are untouched,
+/// so the freed delta is measured across the whole Devices dir rather than
+/// assumed from the estimate.
+fn execute_simctl_prune(devices: PathBuf, before: u64, estimate: u64, dry_run: bool) -> Outcome {
+    if dry_run {
+        return Outcome {
+            freed: estimate,
+            line: format!(
+                "  {YELLOW}[dry-run] would run: xcrun simctl delete unavailable (free {}){RESET}",
+                human(estimate)
+            ),
+        };
+    }
+    let _ = Command::new("xcrun")
+        .args(["simctl", "delete", "unavailable"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let saved = before.saturating_sub(fsutil::size_of(&devices));
     Outcome {
         freed: saved,
         line: format!("  {GREEN}✓ freed {}{RESET}", human(saved)),

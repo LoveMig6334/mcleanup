@@ -42,6 +42,57 @@ pub fn size_of(path: &Path) -> u64 {
     }
 }
 
+/// Cloud mounts the chunked walk never descends into: descending iCloud /
+/// third-party File Provider trees is slow and can wake the sync provider.
+const CLOUD_MOUNTS: &[&str] = &["CloudStorage", "Mobile Documents"];
+
+/// What one chunked walk collects, and what it refuses to descend into.
+///
+/// A directory whose name is in `dirs` is collected *and not descended into* —
+/// the match is the whole subtree, so there is nothing below it worth visiting.
+struct WalkSpec {
+    /// Directory names never descended into (and never collected).
+    prune: &'static [&'static str],
+    /// File names collected as matches.
+    files: &'static [&'static str],
+    /// Directory names collected as matches.
+    dirs: &'static [&'static str],
+}
+
+/// `.DS_Store` anywhere under `$HOME`. Machine-generated trees (`node_modules`,
+/// `.git`, `target`, package caches) ARE walked, matching the bash
+/// `find $HOME -xdev`.
+const DS_STORE_SPEC: WalkSpec = WalkSpec {
+    prune: CLOUD_MOUNTS,
+    files: &[".DS_Store"],
+    dirs: &[],
+};
+
+/// Regenerable per-project scratch directories under a source root.
+///
+/// The prune list is the point: `.venv`, `node_modules` and `target` hold the
+/// dependencies and build products the user has explicitly ruled out of cleanup,
+/// so the walk never enters them — their inner `__pycache__` is left alone rather
+/// than reaching inside a protected tree. `.git` is pruned because object stores
+/// are large, deep, and can contain nothing we match.
+const SCRATCH_SPEC: WalkSpec = WalkSpec {
+    prune: &[
+        ".venv",
+        "node_modules",
+        "target",
+        ".git",
+        "CloudStorage",
+        "Mobile Documents",
+    ],
+    files: &[],
+    dirs: &["__pycache__", ".pytest_cache", ".ruff_cache"],
+};
+
+/// True when `name` is one of `list`.
+fn name_in(list: &[&str], name: &OsStr) -> bool {
+    list.iter().any(|s| name == OsStr::new(s))
+}
+
 /// `.DS_Store` files under `root` on the same device as `root`, with their total
 /// allocated size.
 ///
@@ -54,35 +105,35 @@ pub fn size_of(path: &Path) -> u64 {
 ///     this is a stable ~370ms with no spikes across long runs; going past ~4
 ///     threads brings the contention spikes back, so we cap there.
 ///
-/// We skip only cloud mounts (`~/Library/CloudStorage`, iCloud `Mobile
-/// Documents`), where descending could be slow or wake the sync provider.
-/// Machine-generated trees (`node_modules`, `.git`, `target`, package caches) ARE
-/// walked, so their `.DS_Store` files are cleaned just like the bash
-/// `find $HOME -xdev`. `-xdev` deletion safety is enforced by the per-match device
-/// check, so files off the home volume are never returned.
+/// `-xdev` deletion safety is enforced by the per-match device check, so files
+/// off the home volume are never returned.
 pub fn find_ds_store(root: &Path) -> (usize, u64, Vec<PathBuf>) {
-    let home_dev = fs::symlink_metadata(root).map(|m| m.dev()).unwrap_or(0);
-
-    let candidates = collect_ds_candidates(root);
-
-    // Stat the matches (needed for size) and enforce `-xdev`: keep only files on
-    // the home device.
-    let mut total = 0u64;
-    let mut paths = Vec::with_capacity(candidates.len());
-    for p in candidates {
-        if let Ok(m) = fs::symlink_metadata(&p)
-            && m.dev() == home_dev
-        {
-            total += m.blocks() * 512;
-            paths.push(p);
-        }
-    }
-
-    (paths.len(), total, paths)
+    size_matches(root, collect_chunked(root, &DS_STORE_SPEC))
 }
 
-/// Number of worker threads for the chunked `.DS_Store` walk. Capped at 4:
-/// benchmarking showed ≥6 threads reintroduce ~5s contention spikes on APFS.
+/// Regenerable scratch dirs (`__pycache__`, `.pytest_cache`, `.ruff_cache`) under
+/// a source root, using the same chunked walk as [`find_ds_store`]. See
+/// [`SCRATCH_SPEC`] for why dependency trees are pruned rather than swept.
+pub fn find_project_scratch(root: &Path) -> (usize, u64, Vec<PathBuf>) {
+    size_matches(root, collect_chunked(root, &SCRATCH_SPEC))
+}
+
+/// Enforce `-xdev` against `root`'s device, then total the allocated size of what
+/// survives. Matched *directories* are sized recursively; matched files cost one
+/// extra stat, which is noise against the walk itself.
+fn size_matches(root: &Path, mut candidates: Vec<PathBuf>) -> (usize, u64, Vec<PathBuf>) {
+    let root_dev = fs::symlink_metadata(root).map(|m| m.dev()).unwrap_or(0);
+    candidates.retain(|p| {
+        fs::symlink_metadata(p)
+            .map(|m| m.dev() == root_dev)
+            .unwrap_or(false)
+    });
+    let total = candidates.par_iter().map(|p| size_of(p)).sum();
+    (candidates.len(), total, candidates)
+}
+
+/// Number of worker threads for the chunked walk. Capped at 4: benchmarking
+/// showed ≥6 threads reintroduce ~5s contention spikes on APFS.
 fn ds_walk_threads() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
@@ -90,15 +141,15 @@ fn ds_walk_threads() -> usize {
         .clamp(1, 4)
 }
 
-/// Collect every `.DS_Store` path under `root` (pruned), using coarse parallelism:
+/// Collect every path under `root` matching `spec`, using coarse parallelism:
 /// BFS-expand to a frontier of disjoint subtrees, then walk those subtrees on a
 /// small work-stealing pool. The expansion runs on the calling thread and also
-/// harvests any `.DS_Store` found in the shallow levels above the frontier.
-fn collect_ds_candidates(root: &Path) -> Vec<PathBuf> {
+/// harvests any match found in the shallow levels above the frontier.
+fn collect_chunked(root: &Path, spec: &WalkSpec) -> Vec<PathBuf> {
     let threads = ds_walk_threads();
     // Aim for many more chunks than threads so the shared queue balances the
     // wildly uneven subtree sizes (e.g. Library vs a tiny dotdir).
-    let (frontier, mut found) = expand_to_frontier(root, threads * 16);
+    let (frontier, mut found) = expand_to_frontier(root, threads * 16, spec);
 
     if frontier.is_empty() {
         return found; // whole tree fit above the frontier
@@ -114,7 +165,7 @@ fn collect_ds_candidates(root: &Path) -> Vec<PathBuf> {
                     // Scope the lock to the pop so a worker never holds it while walking.
                     let job = { queue.lock().unwrap().pop() };
                     match job {
-                        Some(dir) => walk_collect(&dir, &mut local),
+                        Some(dir) => walk_collect(&dir, spec, &mut local),
                         None => break,
                     }
                 }
@@ -128,12 +179,28 @@ fn collect_ds_candidates(root: &Path) -> Vec<PathBuf> {
     all
 }
 
+/// Classify one directory entry against `spec`. Returns `(collect, descend)`.
+fn classify(spec: &WalkSpec, name: &OsStr, is_dir: bool) -> (bool, bool) {
+    if is_dir {
+        if name_in(spec.dirs, name) {
+            (true, false) // the whole subtree is the match
+        } else {
+            (false, !name_in(spec.prune, name))
+        }
+    } else {
+        (name_in(spec.files, name), false)
+    }
+}
+
 /// BFS from `root`, descending (and pruning) one level at a time until the
 /// frontier holds at least `min_chunks` directories or the tree is exhausted.
-/// Returns the frontier (disjoint subtrees still to walk) plus every `.DS_Store`
-/// found in the levels above it.
-fn expand_to_frontier(root: &Path, min_chunks: usize) -> (Vec<PathBuf>, Vec<PathBuf>) {
-    let ds_store = OsStr::new(".DS_Store");
+/// Returns the frontier (disjoint subtrees still to walk) plus every match found
+/// in the levels above it.
+fn expand_to_frontier(
+    root: &Path,
+    min_chunks: usize,
+    spec: &WalkSpec,
+) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let mut frontier = vec![root.to_path_buf()];
     let mut found = Vec::new();
     while frontier.len() < min_chunks {
@@ -148,11 +215,11 @@ fn expand_to_frontier(root: &Path, min_chunks: usize) -> (Vec<PathBuf>, Vec<Path
                     Ok(f) => f,
                     Err(_) => continue,
                 };
-                let name = entry.file_name();
-                if ft.is_dir() && !is_pruned_dir(&name) {
-                    next.push(entry.path());
-                } else if ft.is_file() && name == *ds_store {
+                let (collect, descend) = classify(spec, &entry.file_name(), ft.is_dir());
+                if collect {
                     found.push(entry.path());
+                } else if descend {
+                    next.push(entry.path());
                 }
             }
         }
@@ -164,9 +231,8 @@ fn expand_to_frontier(root: &Path, min_chunks: usize) -> (Vec<PathBuf>, Vec<Path
     (frontier, found)
 }
 
-/// Sequential pruned walk of one subtree, appending `.DS_Store` paths to `out`.
-fn walk_collect(root: &Path, out: &mut Vec<PathBuf>) {
-    let ds_store = OsStr::new(".DS_Store");
+/// Sequential pruned walk of one subtree, appending matches to `out`.
+fn walk_collect(root: &Path, spec: &WalkSpec, out: &mut Vec<PathBuf>) {
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let rd = match fs::read_dir(&dir) {
@@ -178,26 +244,14 @@ fn walk_collect(root: &Path, out: &mut Vec<PathBuf>) {
                 Ok(f) => f,
                 Err(_) => continue,
             };
-            let name = entry.file_name();
-            if ft.is_dir() && !is_pruned_dir(&name) {
-                stack.push(entry.path());
-            } else if ft.is_file() && name == *ds_store {
+            let (collect, descend) = classify(spec, &entry.file_name(), ft.is_dir());
+            if collect {
                 out.push(entry.path());
+            } else if descend {
+                stack.push(entry.path());
             }
         }
     }
-}
-
-/// Directories the `.DS_Store` walk never descends: cloud mounts only. Descending
-/// iCloud / third-party File Provider trees is slow and can wake the sync
-/// provider, so `~/Library/CloudStorage` and `~/Library/Mobile Documents` are
-/// skipped. Everything else — including machine-generated trees like
-/// `node_modules`, `target`, and package caches — IS walked, matching the bash
-/// `find $HOME -xdev`; the per-match device check still guarantees nothing off the
-/// home volume is ever deleted.
-fn is_pruned_dir(name: &OsStr) -> bool {
-    const PRUNE: &[&str] = &["CloudStorage", "Mobile Documents"];
-    PRUNE.iter().any(|s| name == OsStr::new(s))
 }
 
 /// Recursively collect every regular file under `root` whose name does NOT end
@@ -348,6 +402,50 @@ mod tests {
         let (count, _total, paths) = find_ds_store(dir.path());
         assert_eq!(count, 1, "CloudStorage .DS_Store should be skipped");
         assert_eq!(paths[0], dir.path().join(".DS_Store"));
+    }
+
+    #[test]
+    fn find_project_scratch_collects_named_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        for rel in ["pkg/__pycache__", "pkg/sub/__pycache__", ".pytest_cache"] {
+            std::fs::create_dir_all(dir.path().join(rel)).unwrap();
+            std::fs::write(dir.path().join(rel).join("x.pyc"), vec![0u8; 4096]).unwrap();
+        }
+        std::fs::write(dir.path().join("pkg/main.py"), b"src").unwrap();
+        let (count, total, paths) = find_project_scratch(dir.path());
+        assert_eq!(count, 3);
+        assert!(total >= 4096 * 3, "expected >= 12288, got {total}");
+        assert!(dir.path().join("pkg/main.py").exists(), "source untouched");
+        assert!(paths.iter().all(|p| {
+            let n = p.file_name().unwrap();
+            n == "__pycache__" || n == ".pytest_cache"
+        }));
+    }
+
+    #[test]
+    fn find_project_scratch_never_enters_dependency_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        // A real one in project source — collected.
+        std::fs::create_dir_all(dir.path().join("src/__pycache__")).unwrap();
+        // These sit inside trees the user ruled out of cleanup entirely.
+        for guarded in [".venv", "node_modules", "target", ".git"] {
+            std::fs::create_dir_all(dir.path().join(guarded).join("__pycache__")).unwrap();
+        }
+        let (count, _total, paths) = find_project_scratch(dir.path());
+        assert_eq!(count, 1, "must not reach into dependency/build trees");
+        assert_eq!(paths[0], dir.path().join("src/__pycache__"));
+    }
+
+    #[test]
+    fn find_project_scratch_does_not_descend_into_a_match() {
+        // A nested __pycache__ inside a matched one must not be returned
+        // separately — the parent already covers it, and returning both would
+        // double-count the size.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("__pycache__/__pycache__")).unwrap();
+        let (count, _total, paths) = find_project_scratch(dir.path());
+        assert_eq!(count, 1);
+        assert_eq!(paths[0], dir.path().join("__pycache__"));
     }
 
     #[test]

@@ -9,7 +9,7 @@ two runtime deps: `rayon` (parallel stat) and `jwalk` (parallel readdir).
 ```sh
 cargo test                              # unit tests (each module has its own)
 cargo build --release                   # optimized; .cargo/config.toml adds target-cpu=native
-./target/release/mcleanup --dry-run     # the `mcleanup` alias points here
+./target/release/mcleanup --dry-run     # ~/.local/bin/mcleanup symlinks here
 MCLEANUP_PROFILE=1 ./target/release/mcleanup --dry-run   # per-stage timings to stderr
 ```
 
@@ -33,16 +33,20 @@ is what lets everything run in parallel while output stays in registration order
 - **`plan.rs`** — the scan phase. Each section returns a `Plan { scan_output,
   opts, prompt, estimate, action, empty }`. `Action` is the enum execute
   dispatches on (`RemovePaths`, `WipeContents`, `WipeEach`, `DeleteFiles`,
-  `RemoveDir`, `Brew`, `Npm`, `ClaudeVersions`). Contains the custom scanners
-  (`scan_brew`, `scan_npm`, `scan_claude_versions`, `scan_dsstore`,
-  `scan_http_storages`, `scan_container_caches`, `scan_copilot`, `scan_nvim`,
-  `scan_zed_languages`, `scan_contents_of`).
+  `RemoveDir`, `Brew`, `Npm`, `ClaudeVersions`, `SimctlPrune`). Contains the
+  custom scanners (`scan_brew`, `scan_npm`, `scan_claude_versions`,
+  `scan_dsstore`, `scan_http_storages`, `scan_container_caches`, `scan_copilot`,
+  `scan_nvim`, `scan_zed_languages`, `scan_contents_of`, `scan_simulator_caches`,
+  `scan_simctl_prune`, `scan_next_build`, `scan_project_scratch`,
+  `scan_darwin_cache`). `PROJECT_ROOT` (`~/Dev`) bounds every source-tree scan.
 - **`execute.rs`** — mutating phase. `execute(plan, dry_run) -> Outcome { freed,
   line }`. **In `dry_run` it mutates nothing** and returns a "would free" line.
 - **`fsutil.rs`** — parallel `size_of` (jwalk + rayon, allocated blocks like
-  `du`), the coarse-parallel `.DS_Store` walk (see its long comment — the chunking
-  and `-xdev` device check are load-bearing), `collect_files_excluding`,
-  `remove_path` / `wipe_contents` / `prune_empty_dirs`, `command_exists`, `home`.
+  `du`), the coarse-parallel chunked walk (see its long comment — the chunking
+  and `-xdev` device check are load-bearing) driven by a `WalkSpec` and shared by
+  `find_ds_store` (`DS_STORE_SPEC`) and `find_project_scratch` (`SCRATCH_SPEC`),
+  `collect_files_excluding`, `remove_path` / `wipe_contents` /
+  `prune_empty_dirs`, `command_exists`, `home`.
 - **`baselines.rs`** — persisted per-section duration EMA at
   `~/.cache/mcleanup/baselines.json`, used to show ETAs in the progress bars.
   Hand-rolled numeric JSON (no serde). Purely cosmetic; every op is best-effort.
@@ -82,6 +86,14 @@ reg.contents_of("Library/Caches", "every app's cache", "Library/Caches", Some("q
   Storage / Cookies). When a target is borderline (installed component, holds
   state), leave it out or gate behind confirmation; see the "deliberate
   exclusions" note in project memory (Claude Cowork VM, rustup rust-docs).
+- **The real bar is re-download / re-provision cost, not regenerability.** Things
+  that only cost local CPU to rebuild are fair game; things that refetch over the
+  network, or that would strand a working environment, are not. Standing
+  keep-outs beyond the list above: project dependency dirs (`.venv`,
+  `node_modules`, Cargo `target/`), iOS simulator devices and `MobileAsset`,
+  `com.apple.wallpaper/aerials`, and `~/.cache/zsh` — that last one is the
+  `_cached_init` startup accelerator defined in `~/.zshrc`, so cleaning it is
+  self-defeating.
 - Preserve the existing doc-comment density and precise, explain-the-why style.
 - `remove_path` swallows errors like `rm -rf`; failures are non-fatal by design.
 - Keep every module's `#[cfg(test)]` tests green; add tests for new `fsutil`/

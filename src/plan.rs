@@ -46,6 +46,8 @@ pub enum Action {
     },
     /// `claude update`, then remove non-current versions (computed at execute time).
     ClaudeVersions,
+    /// `xcrun simctl delete unavailable`; `devices` measured before for the delta.
+    SimctlPrune { devices: PathBuf, before: u64 },
 }
 
 /// The result of scanning one section.
@@ -243,6 +245,10 @@ pub fn scan_http_storages() -> Plan {
 }
 
 /// Container caches scan (heaviest-8 display, wipe each).
+///
+/// `Data/tmp` is swept alongside `Data/Library/Caches`: it is per-container
+/// scratch by definition, and some daemons (notably `com.apple.geod`) accumulate
+/// hundreds of MB there that the caches sweep alone never reaches.
 pub fn scan_container_caches() -> Plan {
     let h = home();
     let mut dirs: Vec<PathBuf> = Vec::new();
@@ -250,6 +256,7 @@ pub fn scan_container_caches() -> Plan {
         &h.join("Library/Containers"),
         "Data/Library/Caches",
     ));
+    dirs.extend(glob_child_dirs(&h.join("Library/Containers"), "Data/tmp"));
     dirs.extend(glob_child_dirs(
         &h.join("Library/Group Containers"),
         "Library/Caches",
@@ -275,7 +282,7 @@ pub fn scan_container_caches() -> Plan {
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "{BOLD}{CYAN}[Container caches]{RESET} per-app sandboxed caches under ~/Library/Containers + Group Containers"
+        "{BOLD}{CYAN}[Container caches]{RESET} per-app sandboxed caches + scratch (Data/tmp) under ~/Library/Containers + Group Containers"
     );
     let _ = writeln!(
         out,
@@ -497,9 +504,317 @@ pub fn scan_claude_versions() -> Plan {
     }
 }
 
+/// Source root scanned for regenerable per-project build output. Everything the
+/// user develops lives under `~/Dev`; nothing outside it is ever walked.
+const PROJECT_ROOT: &str = "Dev";
+
+/// Enumerate two glob levels: `parent/*/*/tail`, keeping dirs. Project trees are
+/// laid out as `Dev/<group>/<project>/…`, so build output sits at depth 2.
+fn glob_grandchild_dirs(parent: &std::path::Path, tail: &str) -> Vec<PathBuf> {
+    child_entries(parent)
+        .filter(|c| c.is_dir())
+        .flat_map(|c| glob_child_dirs(&c, tail))
+        .collect()
+}
+
+/// Simulator per-device caches: `CoreSimulator/Devices/*/data/Library/Caches`.
+///
+/// Only the cache subtree inside each device is wiped. The devices themselves,
+/// their installed apps and their app state all survive — this is deliberately
+/// not `simctl erase`, which would reset working simulators.
+pub fn scan_simulator_caches() -> Plan {
+    let root = home().join("Library/Developer/CoreSimulator/Devices");
+    if !root.is_dir() {
+        return Plan::empty(String::new());
+    }
+    let dirs = glob_child_dirs(&root, "data/Library/Caches");
+    if dirs.is_empty() {
+        return Plan::empty(String::new());
+    }
+
+    let mut total = 0u64;
+    let mut entries: Vec<(u64, PathBuf)> = Vec::new();
+    for d in dirs {
+        let sz = fsutil::size_of(&d);
+        if sz > 0 {
+            total += sz;
+            entries.push((sz, d));
+        }
+    }
+    if total == 0 {
+        return Plan::empty(String::new());
+    }
+    entries.sort_by_key(|e| std::cmp::Reverse(e.0));
+
+    let mut out = String::new();
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "{BOLD}{CYAN}[Simulator caches]{RESET} per-device caches inside iOS simulators (keeps devices, installed apps, app state)"
+    );
+    let _ = writeln!(
+        out,
+        "  Total: {} across {} simulators",
+        human(total),
+        entries.len()
+    );
+    for (sz, p) in entries.iter().take(5) {
+        // The UDID alone identifies the device; the full path is 100+ chars.
+        let udid = p
+            .strip_prefix(&root)
+            .ok()
+            .and_then(|r| r.components().next())
+            .map(|c| c.as_os_str().to_string_lossy().to_string())
+            .unwrap_or_default();
+        let _ = writeln!(out, "    {DIM}{udid}{RESET}  ({})", human(*sz));
+    }
+    if entries.len() > 5 {
+        let _ = writeln!(out, "    {DIM}… and {} more{RESET}", entries.len() - 5);
+    }
+
+    Plan {
+        scan_output: out,
+        opts: SectionOpts::default(),
+        prompt: "  Clear contents of these simulator caches?".to_string(),
+        estimate: total,
+        action: Action::WipeEach(entries.into_iter().map(|(_, p)| p).collect()),
+        empty: false,
+    }
+}
+
+/// `xcrun simctl delete unavailable`: drop simulator devices whose runtime is no
+/// longer installed.
+///
+/// These are dead weight — without their runtime they cannot boot. Devices with a
+/// live runtime are never touched, and `simctl erase` is deliberately never run.
+/// The estimate is real: we size exactly the devices simctl reports unavailable,
+/// so `--dry-run` reports a true number rather than a guess.
+pub fn scan_simctl_prune() -> Plan {
+    let devices = home().join("Library/Developer/CoreSimulator/Devices");
+    if !devices.is_dir() || !fsutil::command_exists("xcrun") {
+        return Plan::empty(String::new());
+    }
+    let doomed: Vec<PathBuf> = unavailable_device_udids()
+        .into_iter()
+        .map(|u| devices.join(u))
+        .filter(|p| p.is_dir())
+        .collect();
+    if doomed.is_empty() {
+        return Plan::empty(format!(
+            "{DIM}[Simulator prune] no unavailable simulators — skipping{RESET}\n"
+        ));
+    }
+    let estimate: u64 = doomed.iter().map(|p| fsutil::size_of(p)).sum();
+    let before = fsutil::size_of(&devices);
+
+    let mut out = String::new();
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "{BOLD}{CYAN}[Simulator prune]{RESET} simulators whose runtime is no longer installed (cannot boot)"
+    );
+    let _ = writeln!(
+        out,
+        "  Found: {} unavailable, {}",
+        doomed.len(),
+        human(estimate)
+    );
+    let _ = writeln!(
+        out,
+        "  {DIM}(runs `xcrun simctl delete unavailable`; working simulators are untouched){RESET}"
+    );
+
+    Plan {
+        scan_output: out,
+        opts: SectionOpts::default(),
+        prompt: "  Delete unavailable simulators?".to_string(),
+        estimate,
+        action: Action::SimctlPrune { devices, before },
+        empty: false,
+    }
+}
+
+/// UDIDs of simulator devices `simctl` reports as unavailable.
+///
+/// Two forms are handled: a per-device `(unavailable, …)` suffix, and devices
+/// listed under an `-- Unavailable: <runtime> --` header (older simctl output).
+fn unavailable_device_udids() -> Vec<String> {
+    let Ok(out) = std::process::Command::new("xcrun")
+        .args(["simctl", "list", "devices"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    let mut udids = Vec::new();
+    let mut in_unavailable_section = false;
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let t = line.trim();
+        if t.starts_with("--") && t.ends_with("--") {
+            in_unavailable_section = t.to_ascii_lowercase().contains("unavailable");
+            continue;
+        }
+        if in_unavailable_section || t.contains("(unavailable") {
+            udids.extend(extract_udid(t));
+        }
+    }
+    udids
+}
+
+/// Pull the parenthesized UDID out of one `simctl list devices` line. Matched by
+/// shape (8-4-4-4-12 hex) so the state and reason parens are never mistaken for it.
+fn extract_udid(line: &str) -> Option<String> {
+    line.split(['(', ')'])
+        .find(|tok| {
+            tok.len() == 36
+                && tok.bytes().enumerate().all(|(i, b)| match i {
+                    8 | 13 | 18 | 23 => b == b'-',
+                    _ => b.is_ascii_hexdigit(),
+                })
+        })
+        .map(str::to_string)
+}
+
+/// Next.js build output: `Dev/<group>/<project>/.next`.
+///
+/// Pure build product — no packages live here, so restoring it is a local
+/// `next build` with no network involved.
+pub fn scan_next_build() -> Plan {
+    let root = home().join(PROJECT_ROOT);
+    if !root.is_dir() {
+        return Plan::empty(String::new());
+    }
+    let dirs = glob_grandchild_dirs(&root, ".next");
+    if dirs.is_empty() {
+        return Plan::empty(String::new());
+    }
+    scan_section(
+        "Next.js builds",
+        "Next.js .next build output under ~/Dev (regenerated by the next build)",
+        SectionOpts {
+            silent_if_empty: true,
+            ..Default::default()
+        },
+        dirs,
+    )
+}
+
+/// Python/tooling scratch dirs under `~/Dev`: `__pycache__`, `.pytest_cache`,
+/// `.ruff_cache`.
+///
+/// The walk never enters `.venv`, `node_modules`, `target` or `.git` — see
+/// `fsutil::SCRATCH_SPEC`. Nothing here is downloaded; it is all regenerated
+/// locally on the next import or test run.
+pub fn scan_project_scratch() -> Plan {
+    let root = home().join(PROJECT_ROOT);
+    if !root.is_dir() {
+        return Plan::empty(String::new());
+    }
+    let (count, total, victims) = fsutil::find_project_scratch(&root);
+    if count == 0 {
+        return Plan::empty(format!(
+            "{DIM}[Project scratch] nothing to clean — skipping{RESET}\n"
+        ));
+    }
+    let mut out = String::new();
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "{BOLD}{CYAN}[Project scratch]{RESET} __pycache__ / .pytest_cache / .ruff_cache under ~/Dev (regenerated on next run)"
+    );
+    let _ = writeln!(out, "  Found: {count} dirs, {}", human(total));
+    let _ = writeln!(
+        out,
+        "  {DIM}(never enters .venv, node_modules, target or .git){RESET}"
+    );
+    Plan {
+        scan_output: out,
+        opts: SectionOpts::default(),
+        prompt: "  Delete these scratch dirs?".to_string(),
+        estimate: total,
+        action: Action::RemovePaths(victims),
+        empty: false,
+    }
+}
+
+/// The per-user Darwin cache dir (`$TMPDIR`'s sibling `C`), resolved at runtime.
+///
+/// The path embeds a per-boot-volume random component, so it is always resolved
+/// via `getconf` and never hardcoded; the result is sanity-checked to be under
+/// `/var/folders` before anything is wiped.
+pub fn scan_darwin_cache() -> Plan {
+    let Some(root) = darwin_user_cache_dir() else {
+        return Plan::empty(format!(
+            "{DIM}[Darwin user cache] could not resolve DARWIN_USER_CACHE_DIR — skipping{RESET}\n"
+        ));
+    };
+    scan_contents_of(
+        "Darwin user cache",
+        "per-user system cache dir ($TMPDIR/../C) — font, dyld and framework caches",
+        root,
+        Some("running apps may hold open handles here — quit apps first"),
+    )
+}
+
+/// Resolve `DARWIN_USER_CACHE_DIR`, rejecting anything outside `/var/folders`.
+fn darwin_user_cache_dir() -> Option<PathBuf> {
+    let out = std::process::Command::new("getconf")
+        .arg("DARWIN_USER_CACHE_DIR")
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    // getconf reports the dir with a trailing slash; trim it so the guard below
+    // and the displayed path are both clean.
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let s = s.trim_end_matches('/');
+    if !(s.starts_with("/var/folders/") || s.starts_with("/private/var/folders/")) {
+        return None;
+    }
+    let p = PathBuf::from(s);
+    p.is_dir().then_some(p)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extract_udid_picks_the_udid_not_the_state() {
+        let line = "iPhone 12 (0AD6BC38-6AEA-478E-82FB-3E5E020C2317) (Shutdown) (unavailable, runtime profile not found)";
+        assert_eq!(
+            extract_udid(line).as_deref(),
+            Some("0AD6BC38-6AEA-478E-82FB-3E5E020C2317")
+        );
+    }
+
+    #[test]
+    fn extract_udid_rejects_lines_without_one() {
+        assert_eq!(extract_udid("== Devices =="), None);
+        assert_eq!(extract_udid("-- iOS 26.5 --"), None);
+        // Right length, wrong shape (no hex).
+        assert_eq!(extract_udid("(zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz)"), None);
+    }
+
+    #[test]
+    fn darwin_cache_dir_is_under_var_folders() {
+        // Resolves on any macOS box; the guard is what we care about.
+        if let Some(p) = darwin_user_cache_dir() {
+            let s = p.to_string_lossy().to_string();
+            assert!(s.starts_with("/var/folders/") || s.starts_with("/private/var/folders/"));
+            assert!(!s.ends_with('/'), "trailing slash must be trimmed");
+        }
+    }
+
+    #[test]
+    fn glob_grandchild_dirs_finds_depth_two() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("group/proj/.next")).unwrap();
+        // Depth 1 must NOT match — only `<group>/<project>/tail`.
+        std::fs::create_dir_all(dir.path().join("loose/.next")).unwrap();
+        let found = glob_grandchild_dirs(dir.path(), ".next");
+        assert_eq!(found, vec![dir.path().join("group/proj/.next")]);
+    }
 
     #[test]
     fn scan_section_empty_is_marked() {

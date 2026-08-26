@@ -258,9 +258,10 @@ fn main() {
     );
     reg.section(
         "Zed",
-        "Zed editor logs + bundled Node cache",
+        "Zed editor logs, hang traces + bundled Node cache (keeps agent threads)",
         &[
             "Library/Logs/Zed",
+            "Library/Application Support/Zed/hang_traces",
             "Library/Application Support/Zed/node/cache",
         ],
     );
@@ -285,11 +286,26 @@ fn main() {
             ".local/state/nvim/nvim.log",
         ],
     );
+    reg.group("Xcode & iOS simulators");
     reg.section_silent(
         "Xcode DerivedData",
         "Xcode per-project build intermediates (rebuilt on next build)",
         &["Library/Developer/Xcode/DerivedData"],
     );
+    // Scratch simulators Xcode spins up to render SwiftUI previews — distinct from
+    // the real simulators under CoreSimulator/Devices, which are never removed.
+    // Recreated on the next preview (the first one is slow); nothing is downloaded.
+    reg.section_silent(
+        "Xcode Previews",
+        "SwiftUI preview scratch simulators (recreated on next preview)",
+        &[
+            "Library/Developer/Xcode/UserData/Previews/Simulator Devices",
+            // Xcode has written both spellings; the escaped one is a stale twin.
+            "Library/Developer/Xcode/UserData/Previews/Simulator%20Devices",
+        ],
+    );
+    reg.simulator_caches();
+    reg.simctl_prune();
 
     reg.group("Browsers");
     reg.section(
@@ -314,6 +330,9 @@ fn main() {
             "Library/Application Support/Google/Chrome/Default/DawnWebGPUCache",
             "Library/Application Support/Google/Chrome/WasmTtsEngine",
             "Library/Application Support/Google/Chrome/OnDeviceHeadSuggestModel",
+            // Re-downloaded in the background on next launch; brief gap in
+            // Safe Browsing protection until it lands.
+            "Library/Application Support/Google/Chrome/Safe Browsing",
         ],
     );
     reg.section(
@@ -357,6 +376,31 @@ fn main() {
             "Library/Application Support/Claude/DawnGraphiteCache",
             "Library/Application Support/Claude/DawnWebGPUCache",
             "Library/Application Support/Claude/Crashpad",
+        ],
+    );
+
+    reg.group("Creative & media tools");
+    // Logs and plugin scan caches only. The Resolve project database
+    // ("Resolve Project Library"), Fusion macros/templates/LUTs and DolbyVision
+    // metadata are user work and are never touched.
+    reg.section_silent(
+        "DaVinci Resolve",
+        "Resolve diagnostic logs + OFX plugin scan cache (keeps project database, Fusion assets)",
+        &[
+            "Library/Application Support/Blackmagic Design/DaVinci Resolve/logs",
+            "Library/Application Support/Blackmagic Design/DaVinci Resolve/OFXPluginCacheV2.xml",
+        ],
+    );
+    // Scenes, profiles and plugin_config hold the show configuration (and the
+    // obs-websocket password) — logs and crash dumps only.
+    reg.section_silent(
+        "OBS Studio",
+        "OBS logs, crash dumps, profiler traces + update staging (keeps scenes, profiles, plugin config)",
+        &[
+            "Library/Application Support/obs-studio/logs",
+            "Library/Application Support/obs-studio/crashes",
+            "Library/Application Support/obs-studio/profiler_data",
+            "Library/Application Support/obs-studio/updates",
         ],
     );
 
@@ -430,6 +474,13 @@ fn main() {
         &[".local/state/btop.log"],
     );
 
+    // Build output only. Dependency trees (.venv, node_modules, target) are
+    // deliberately absent: restoring those means re-downloading packages, which is
+    // exactly the cost this tool exists to avoid.
+    reg.group("Project build output");
+    reg.next_build();
+    reg.project_scratch();
+
     reg.group("System catch-alls");
     reg.contents_of(
         "Library/Caches",
@@ -443,8 +494,19 @@ fn main() {
         "Library/Logs",
         None,
     );
+    reg.section_silent(
+        "Apple Trial",
+        "Apple A/B experiment configs (re-fetched on demand)",
+        &["Library/Trial"],
+    );
+    reg.section_silent(
+        "CrashReporter",
+        "CrashReporter per-app preferences (recreated as needed)",
+        &["Library/Application Support/CrashReporter"],
+    );
     reg.http_storages();
     reg.container_caches();
+    reg.darwin_cache();
     reg.dsstore();
 
     let baselines = std::sync::Mutex::new(baselines::load());

@@ -7,8 +7,9 @@ use std::time::Instant;
 use crate::execute::{Outcome, execute};
 use crate::plan::{
     Plan, SectionOpts, paths, scan_brew, scan_claude_versions, scan_container_caches,
-    scan_contents_of, scan_copilot, scan_dsstore, scan_http_storages, scan_npm, scan_nvim,
-    scan_section, scan_zed_languages,
+    scan_contents_of, scan_copilot, scan_darwin_cache, scan_dsstore, scan_http_storages,
+    scan_next_build, scan_npm, scan_nvim, scan_project_scratch, scan_section, scan_simctl_prune,
+    scan_simulator_caches, scan_zed_languages,
 };
 use crate::progress::Tracker;
 use crate::ui::{self, DIM, RESET, group};
@@ -143,6 +144,21 @@ impl Registry {
     }
     pub fn zed_languages(&mut self) {
         self.push("Zed languages", Box::new(scan_zed_languages));
+    }
+    pub fn simulator_caches(&mut self) {
+        self.push("Simulator caches", Box::new(scan_simulator_caches));
+    }
+    pub fn simctl_prune(&mut self) {
+        self.push("Simulator prune", Box::new(scan_simctl_prune));
+    }
+    pub fn next_build(&mut self) {
+        self.push("Next.js builds", Box::new(scan_next_build));
+    }
+    pub fn project_scratch(&mut self) {
+        self.push("Project scratch", Box::new(scan_project_scratch));
+    }
+    pub fn darwin_cache(&mut self) {
+        self.push("Darwin user cache", Box::new(scan_darwin_cache));
     }
 
     #[cfg(test)]

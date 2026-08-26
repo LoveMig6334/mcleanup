@@ -20,12 +20,16 @@ cargo build --release
 ```
 
 The optimized binary lands at `target/release/mcleanup`. A `target-cpu=native`
-build flag (in `.cargo/config.toml`) tunes it for the local CPU. Symlink or alias
-it onto your `PATH`:
+build flag (in `.cargo/config.toml`) tunes it for the local CPU. Symlink it onto
+your `PATH`:
 
 ```sh
-alias mcleanup="$PWD/target/release/mcleanup"
+ln -sf "$PWD/target/release/mcleanup" ~/.local/bin/mcleanup
 ```
+
+A symlink (rather than a shell alias) keeps it working in scripts and
+non-interactive shells, and every later `cargo build --release` is picked up
+with no relinking.
 
 Requires macOS. `brew`, `npm`, and `claude` are used when present and skipped
 otherwise.
