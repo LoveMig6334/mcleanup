@@ -62,13 +62,19 @@ Sections are grouped by domain:
 - **ML / data science** — numba, matplotlib, Keras, Jupyter, IPython, PyTorch
   hub, astropy, vllm-metal, and (with confirmation) rtmlib + HuggingFace hub.
 - **Editors & IDEs** — VSCode caches, Zed logs/caches, Neovim caches/logs,
-  tree-sitter parsers, Xcode DerivedData, and (with confirmation) Zed language
+  tree-sitter parsers, and (with confirmation) Zed language
   servers, Zed history (recent-projects list in the app and in the Dock's
   "Open Recent" — restarts `sharedfilelistd` so the Dock menu actually
   empties; window layouts go with it, everything else in Zed's db stays)
   and Copilot embeddings.
+- **Xcode & iOS simulators** — DerivedData, SwiftUI preview scratch simulators,
+  per-simulator scratch (caches, unified-log store + symbol maps, LaunchServices
+  db, tmp — booted simulators are skipped; installed apps, app state and
+  MobileAsset downloads stay), `simctl delete unavailable` for simulators whose
+  runtime is gone, and CoreSimulator's host-side dyld caches.
 - **Browsers** — Chrome/Google HTTP, service-worker, shader, and on-device-model
-  caches; Safari container caches (keeps bookmarks/history).
+  caches; leftover headless-Chrome / automation temp profiles; Chrome for Testing
+  crash dumps; Safari container caches (keeps bookmarks/history).
 - **Apps** — Discord, Bambu Studio, Claude Desktop HTTP/GPU/code caches and logs.
 - **Claude Code & friends** — Claude Code transient caches, edit-rewind history,
   old version pruning (`claude update`), plugin caches, GitHub Copilot CLI,
@@ -92,8 +98,10 @@ Sections are grouped by domain:
   because they're expensive to rebuild (large model re-downloads, LSP servers).
 - **Deliberately never touched:** installed toolchains, editor extensions,
   saved sessions, credentials, and app state (IndexedDB / Local Storage /
-  Cookies). Large stateful artifacts like the Claude Code sandbox VM are out of
-  scope by design.
+  Cookies). Large stateful artifacts like the Claude Code sandbox VM, iOS
+  simulator devices and their MobileAsset downloads, and the Core Spotlight
+  app-content index (`~/Library/Metadata/CoreSpotlight` — apps must re-feed it,
+  not a cache) are out of scope by design.
 
 ## Development
 

@@ -40,6 +40,8 @@ is what lets everything run in parallel while output stays in registration order
   `/usr/bin/sqlite3`, never the db file), `scan_contents_of`, `scan_simulator_caches`,
   `scan_simctl_prune`, `scan_next_build`, `scan_project_scratch`,
   `scan_darwin_cache`). `PROJECT_ROOT` (`~/Dev`) bounds every source-tree scan.
+  `scan_simulator_caches` wipes only the `SIMULATOR_DEVICE_SCRATCH` subtrees inside
+  each `CoreSimulator/Devices/<UDID>` and skips devices `simctl` reports Booted.
 - **`execute.rs`** — mutating phase. `execute(plan, dry_run) -> Outcome { freed,
   line }`. **In `dry_run` it mutates nothing** and returns a "would free" line.
 - **`fsutil.rs`** — parallel `size_of` (jwalk + rayon, allocated blocks like
@@ -91,7 +93,12 @@ reg.contents_of("Library/Caches", "every app's cache", "Library/Caches", Some("q
   that only cost local CPU to rebuild are fair game; things that refetch over the
   network, or that would strand a working environment, are not. Standing
   keep-outs beyond the list above: project dependency dirs (`.venv`,
-  `node_modules`, Cargo `target/`), iOS simulator devices and `MobileAsset`,
+  `node_modules`, Cargo `target/`), iOS simulator devices and `MobileAsset`
+  (inside a device only `data/Library/Caches`, `data/var/db/{diagnostics,
+  uuidtext,lsd}`, `data/tmp` and `data/Containers/Temp` are scratch — never
+  `Containers/{Bundle,Data,Shared}` or the rest of `Library/`),
+  `~/Library/Metadata/CoreSpotlight` (the per-user app-content search index —
+  `mdutil -E` can't rebuild it, apps must re-feed it; rejected 2026-09-04),
   `com.apple.wallpaper/aerials`, and `~/.cache/zsh` — that last one is the
   `_cached_init` startup accelerator defined in `~/.zshrc`, so cleaning it is
   self-defeating.
