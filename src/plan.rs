@@ -621,69 +621,139 @@ fn glob_grandchild_dirs(parent: &std::path::Path, tail: &str) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Simulator per-device caches: `CoreSimulator/Devices/*/data/Library/Caches`.
+/// Regenerable subtrees inside each simulator device (`Devices/<UDID>/data/…`).
 ///
-/// Only the cache subtree inside each device is wiped. The devices themselves,
-/// their installed apps and their app state all survive — this is deliberately
-/// not `simctl erase`, which would reset working simulators.
+/// Everything here is rebuilt by the simulated OS on its next boot and nothing
+/// is fetched over the network. Deliberately absent: `private/var/MobileAsset`
+/// (Siri / linguistic assets downloaded on first boot — multi-GB per device),
+/// `Containers/{Bundle,Data,Shared}` (installed apps and their state) and the
+/// rest of `Library/` (Health, Photos, homed … — device state, not cache).
+///
+/// `diagnostics` (the unified-log store) and `uuidtext` (its symbol maps) only
+/// make sense together: logs without their maps are unreadable, so both are
+/// always in the list.
+const SIMULATOR_DEVICE_SCRATCH: &[&str] = &[
+    "data/Library/Caches",
+    "data/var/db/diagnostics",
+    "data/var/db/uuidtext",
+    "data/var/db/lsd",
+    "data/tmp",
+    "data/Containers/Temp",
+];
+
+/// Simulator per-device scratch: caches, unified-log store, LaunchServices
+/// db and tmp inside `CoreSimulator/Devices/*` (see [`SIMULATOR_DEVICE_SCRATCH`]).
+///
+/// Only those subtrees are wiped. The devices themselves, their installed apps
+/// and their app state all survive — this is deliberately not `simctl erase`,
+/// which would reset working simulators. Devices that are currently booted are
+/// skipped entirely: the simulated OS holds its log store open, and pulling it
+/// out from under a running system is not worth the few hundred MB.
 pub fn scan_simulator_caches() -> Plan {
-    let root = home().join("Library/Developer/CoreSimulator/Devices");
+    scan_simulator_caches_in(
+        &home().join("Library/Developer/CoreSimulator/Devices"),
+        &booted_device_udids(),
+    )
+}
+
+/// [`scan_simulator_caches`] over an explicit devices root and booted-UDID list
+/// (the split keeps the walk testable without `simctl`).
+fn scan_simulator_caches_in(root: &std::path::Path, booted: &[String]) -> Plan {
     if !root.is_dir() {
         return Plan::empty(String::new());
     }
-    let dirs = glob_child_dirs(&root, "data/Library/Caches");
-    if dirs.is_empty() {
+    let devices: Vec<PathBuf> = child_entries(root)
+        .filter(|d| d.is_dir())
+        .filter(|d| !booted.iter().any(|u| d.file_name().is_some_and(|n| n == u.as_str())))
+        .collect();
+    if devices.is_empty() {
         return Plan::empty(String::new());
     }
 
+    // Per-device totals drive the display; the individual subtrees are what
+    // execute actually wipes (one `wipe_contents` each, so the dirs stay put).
     let mut total = 0u64;
-    let mut entries: Vec<(u64, PathBuf)> = Vec::new();
-    for d in dirs {
-        let sz = fsutil::size_of(&d);
-        if sz > 0 {
-            total += sz;
-            entries.push((sz, d));
+    let mut per_device: Vec<(u64, String)> = Vec::new();
+    let mut targets: Vec<PathBuf> = Vec::new();
+    for dev in devices {
+        let mut dev_total = 0u64;
+        for tail in SIMULATOR_DEVICE_SCRATCH {
+            let d = dev.join(tail);
+            if !d.is_dir() {
+                continue;
+            }
+            let sz = fsutil::size_of(&d);
+            if sz > 0 {
+                dev_total += sz;
+                targets.push(d);
+            }
+        }
+        if dev_total > 0 {
+            total += dev_total;
+            // The UDID alone identifies the device; the full path is 100+ chars.
+            let udid = dev.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            per_device.push((dev_total, udid));
         }
     }
     if total == 0 {
         return Plan::empty(String::new());
     }
-    entries.sort_by_key(|e| std::cmp::Reverse(e.0));
+    per_device.sort_by_key(|e| std::cmp::Reverse(e.0));
 
     let mut out = String::new();
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "{BOLD}{CYAN}[Simulator caches]{RESET} per-device caches inside iOS simulators (keeps devices, installed apps, app state)"
+        "{BOLD}{CYAN}[Simulator caches]{RESET} per-device caches, logs and tmp inside iOS simulators (keeps devices, installed apps, app state)"
     );
     let _ = writeln!(
         out,
         "  Total: {} across {} simulators",
         human(total),
-        entries.len()
+        per_device.len()
     );
-    for (sz, p) in entries.iter().take(5) {
-        // The UDID alone identifies the device; the full path is 100+ chars.
-        let udid = p
-            .strip_prefix(&root)
-            .ok()
-            .and_then(|r| r.components().next())
-            .map(|c| c.as_os_str().to_string_lossy().to_string())
-            .unwrap_or_default();
+    for (sz, udid) in per_device.iter().take(5) {
         let _ = writeln!(out, "    {DIM}{udid}{RESET}  ({})", human(*sz));
     }
-    if entries.len() > 5 {
-        let _ = writeln!(out, "    {DIM}… and {} more{RESET}", entries.len() - 5);
+    if per_device.len() > 5 {
+        let _ = writeln!(out, "    {DIM}… and {} more{RESET}", per_device.len() - 5);
+    }
+    if !booted.is_empty() {
+        let _ = writeln!(
+            out,
+            "  {DIM}({} booted simulator(s) skipped — shut them down to include them){RESET}",
+            booted.len()
+        );
     }
 
     Plan {
         scan_output: out,
         opts: SectionOpts::default(),
-        prompt: "  Clear contents of these simulator caches?".to_string(),
+        prompt: "  Clear these simulator caches and logs?".to_string(),
         estimate: total,
-        action: Action::WipeEach(entries.into_iter().map(|(_, p)| p).collect()),
+        action: Action::WipeEach(targets),
         empty: false,
     }
+}
+
+/// UDIDs of simulator devices `simctl` reports as `(Booted)`. Empty when
+/// `xcrun` is missing or fails — every device is then treated as shut down,
+/// which matches the pre-Xcode behaviour of this scanner.
+fn booted_device_udids() -> Vec<String> {
+    if !fsutil::command_exists("xcrun") {
+        return Vec::new();
+    }
+    let Ok(out) = std::process::Command::new("xcrun")
+        .args(["simctl", "list", "devices"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| l.contains("(Booted)"))
+        .filter_map(extract_udid)
+        .collect()
 }
 
 /// `xcrun simctl delete unavailable`: drop simulator devices whose runtime is no
@@ -918,6 +988,45 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("loose/.next")).unwrap();
         let found = glob_grandchild_dirs(dir.path(), ".next");
         assert_eq!(found, vec![dir.path().join("group/proj/.next")]);
+    }
+
+    #[test]
+    fn simulator_scratch_wipes_only_listed_subtrees_and_skips_booted() {
+        let dir = tempfile::tempdir().unwrap();
+        let mk = |rel: &str| {
+            let p = dir.path().join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, vec![0u8; 8192]).unwrap();
+        };
+        // Device A: log store + tmp are targets; MobileAsset and an app
+        // container are not, no matter how big.
+        mk("AAAAAAAA-0000-0000-0000-000000000000/data/var/db/diagnostics/log");
+        mk("AAAAAAAA-0000-0000-0000-000000000000/data/tmp/scratch");
+        mk("AAAAAAAA-0000-0000-0000-000000000000/data/private/var/MobileAsset/big");
+        mk("AAAAAAAA-0000-0000-0000-000000000000/data/Containers/Data/app/state");
+        // Device B is booted and must be skipped even though it has a cache.
+        mk("BBBBBBBB-0000-0000-0000-000000000000/data/Library/Caches/x");
+        let booted = vec!["BBBBBBBB-0000-0000-0000-000000000000".to_string()];
+
+        let plan = scan_simulator_caches_in(dir.path(), &booted);
+        assert!(!plan.empty);
+        let Action::WipeEach(dirs) = plan.action else {
+            panic!("expected WipeEach")
+        };
+        let a = dir.path().join("AAAAAAAA-0000-0000-0000-000000000000");
+        let mut got: Vec<PathBuf> = dirs;
+        got.sort();
+        let mut want = vec![a.join("data/var/db/diagnostics"), a.join("data/tmp")];
+        want.sort();
+        assert_eq!(got, want);
+        assert!(plan.scan_output.contains("1 booted simulator(s) skipped"));
+    }
+
+    #[test]
+    fn simulator_scratch_empty_when_nothing_regenerable() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("AAAAAAAA-0000-0000-0000-000000000000/data/Containers/Data")).unwrap();
+        assert!(scan_simulator_caches_in(dir.path(), &[]).empty);
     }
 
     #[test]

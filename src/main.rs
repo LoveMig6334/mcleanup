@@ -308,8 +308,33 @@ fn main() {
     );
     reg.simulator_caches();
     reg.simctl_prune();
+    // Host-side CoreSimulator scratch: dyld shared caches derived from installed
+    // runtimes (rebuilt on next boot, nothing downloaded) and the service's tmp.
+    // Devices/ is deliberately not here — see scan_simulator_caches.
+    reg.section_silent(
+        "CoreSimulator caches",
+        "simulator runtime dyld caches + service tmp (rebuilt on next boot)",
+        &[
+            "Library/Developer/CoreSimulator/Caches",
+            "Library/Developer/CoreSimulator/Temp",
+        ],
+    );
 
     reg.group("Browsers");
+    // Headless Chrome (Puppeteer/Playwright-style runs, Chrome's own `--headless`)
+    // leaves a full `scoped_dir*` profile behind per run and never cleans up.
+    // No binaries live here — those are elsewhere and not touched.
+    reg.contents_of(
+        "Chrome headless profiles",
+        "leftover temp profiles from headless Chrome / automation runs",
+        "Library/Application Support/Google/Chrome-headless",
+        Some("stop any running headless Chrome / browser automation first"),
+    );
+    reg.section_silent(
+        "Chrome for Testing crashes",
+        "Chrome for Testing crash dumps",
+        &["Library/Application Support/Google/Chrome for Testing/Crashpad"],
+    );
     reg.section(
         "Chrome / Google",
         "Chrome HTTP/service-worker/shader caches + Google app caches + updater payloads",
