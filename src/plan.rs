@@ -252,23 +252,38 @@ pub fn scan_http_storages() -> Plan {
     }
 }
 
-/// Container caches scan (heaviest-8 display, wipe each).
+/// The per-container subtrees that are scratch by definition, one glob level
+/// under `~/Library/Containers` (`containers`) and `~/Library/Group Containers`
+/// (`groups`). Split out from [`scan_container_caches`] so the shape list is
+/// unit-testable against a temp tree.
 ///
-/// `Data/tmp` is swept alongside `Data/Library/Caches`: it is per-container
-/// scratch by definition, and some daemons (notably `com.apple.geod`) accumulate
-/// hundreds of MB there that the caches sweep alone never reaches.
+/// - `Data/Library/Caches` — the sandboxed twin of `~/Library/Caches`.
+/// - `Data/tmp` — per-container scratch; some daemons (notably
+///   `com.apple.geod`) accumulate hundreds of MB there that the caches sweep
+///   alone never reaches.
+/// - `Data/Library/Logs` — the sandboxed twin of `~/Library/Logs` (which the
+///   catch-all already wipes). Microsoft Office is the notorious case: Word's
+///   MSAL/telemetry logs grow without bound and nothing else prunes them.
+///
+/// Deliberately *not* here: `Data/Library/Application Support`, `WebKit`
+/// (LocalStorage / IndexedDB), `Documents`, `Preferences` — all app state.
+fn container_scratch_dirs(containers: &std::path::Path, groups: &std::path::Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for tail in ["Data/Library/Caches", "Data/tmp", "Data/Library/Logs"] {
+        dirs.extend(glob_child_dirs(containers, tail));
+    }
+    dirs.extend(glob_child_dirs(groups, "Library/Caches"));
+    dirs
+}
+
+/// Container caches scan (heaviest-8 display, wipe each). See
+/// [`container_scratch_dirs`] for the exact subtrees and why.
 pub fn scan_container_caches() -> Plan {
     let h = home();
-    let mut dirs: Vec<PathBuf> = Vec::new();
-    dirs.extend(glob_child_dirs(
+    let dirs = container_scratch_dirs(
         &h.join("Library/Containers"),
-        "Data/Library/Caches",
-    ));
-    dirs.extend(glob_child_dirs(&h.join("Library/Containers"), "Data/tmp"));
-    dirs.extend(glob_child_dirs(
         &h.join("Library/Group Containers"),
-        "Library/Caches",
-    ));
+    );
 
     let mut total = 0u64;
     let mut entries: Vec<(u64, PathBuf)> = Vec::new();
@@ -290,7 +305,7 @@ pub fn scan_container_caches() -> Plan {
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "{BOLD}{CYAN}[Container caches]{RESET} per-app sandboxed caches + scratch (Data/tmp) under ~/Library/Containers + Group Containers"
+        "{BOLD}{CYAN}[Container caches]{RESET} per-app sandboxed caches, scratch (Data/tmp) + logs under ~/Library/Containers + Group Containers"
     );
     let _ = writeln!(
         out,
@@ -978,6 +993,39 @@ mod tests {
             assert!(s.starts_with("/var/folders/") || s.starts_with("/private/var/folders/"));
             assert!(!s.ends_with('/'), "trailing slash must be trimmed");
         }
+    }
+
+    #[test]
+    fn container_scratch_dirs_covers_caches_tmp_and_logs() {
+        let dir = tempfile::tempdir().unwrap();
+        let containers = dir.path().join("Containers");
+        let groups = dir.path().join("Group Containers");
+        for rel in [
+            "Containers/com.example.a/Data/Library/Caches",
+            "Containers/com.example.a/Data/tmp",
+            "Containers/com.microsoft.Word/Data/Library/Logs",
+            // State subtrees that must never be picked up.
+            "Containers/com.example.a/Data/Library/Application Support",
+            "Containers/com.example.a/Data/Library/WebKit",
+            "Containers/com.example.a/Data/Documents",
+            "Group Containers/group.example/Library/Caches",
+            "Group Containers/group.example/Library/Application Support",
+        ] {
+            std::fs::create_dir_all(dir.path().join(rel)).unwrap();
+        }
+        let mut found = container_scratch_dirs(&containers, &groups);
+        found.sort();
+        let mut want: Vec<PathBuf> = [
+            "Containers/com.example.a/Data/Library/Caches",
+            "Containers/com.example.a/Data/tmp",
+            "Containers/com.microsoft.Word/Data/Library/Logs",
+            "Group Containers/group.example/Library/Caches",
+        ]
+        .iter()
+        .map(|r| dir.path().join(r))
+        .collect();
+        want.sort();
+        assert_eq!(found, want);
     }
 
     #[test]

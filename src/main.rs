@@ -405,6 +405,16 @@ fn main() {
             "Library/Application Support/Claude/Crashpad",
         ],
     );
+    // Office keeps its shared state in the UBF8T346G9.Office group container.
+    // Only the font cache is scratch (rebuilt on next launch, no download);
+    // SolutionPackages (installed add-ins), Licensing and the per-app
+    // container's Application Support (AutoRecovery) are state. Word's own
+    // container logs are picked up by the container-caches scanner.
+    reg.section_silent(
+        "Microsoft Office",
+        "Office shared font cache (rebuilt on next launch; keeps add-ins, licensing, AutoRecovery)",
+        &["Library/Group Containers/UBF8T346G9.Office/FontCache"],
+    );
 
     reg.group("Creative & media tools");
     // Logs and plugin scan caches only. The Resolve project database
@@ -417,6 +427,18 @@ fn main() {
             "Library/Application Support/Blackmagic Design/DaVinci Resolve/logs",
             "Library/Application Support/Blackmagic Design/DaVinci Resolve/OFXPluginCacheV2.xml",
         ],
+    );
+    // ~/Movies/CacheClip is Resolve's configured cache root (Fairlight audio
+    // analysis/render cache today; optimized media and render cache land here
+    // too). Wipe the *contents* and keep the directory: if the root itself goes
+    // missing Resolve silently falls back to a default location. Re-rendered
+    // locally on next playback — no download. Never touch the neighbouring
+    // `.gallery` (still grabs = user work) or `Resolve Project Backups`.
+    reg.contents_of(
+        "Resolve cache clips",
+        "DaVinci Resolve render / Fairlight cache (re-rendered locally on next playback)",
+        "Movies/CacheClip",
+        Some("quit DaVinci Resolve first"),
     );
     // Scenes, profiles and plugin_config hold the show configuration (and the
     // obs-websocket password) — logs and crash dumps only.
