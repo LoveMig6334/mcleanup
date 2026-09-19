@@ -77,8 +77,10 @@ Sections are grouped by domain:
   crash dumps; Safari container caches (keeps bookmarks/history).
 - **Apps** — Discord, Bambu Studio, Claude Desktop HTTP/GPU/code caches and logs.
 - **Claude Code & friends** — Claude Code transient caches, edit-rewind history,
-  old version pruning (`claude update`), plugin caches, GitHub Copilot CLI,
-  opencode cache and logs.
+  old version pruning (`claude update`), superseded Codex standalone releases
+  (~280 MB per update; the release `current` points at, and any pending
+  self-update, are kept), plugin caches, GitHub Copilot CLI, opencode cache and
+  logs.
 - **Shell & terminal** — yazi, zsh session files (main history untouched),
   starship, herdr logs, btop log.
 - **System catch-alls** — full contents of `~/Library/Caches` and `~/Library/Logs`,
@@ -94,6 +96,9 @@ Sections are grouped by domain:
   files off the home volume are never deleted; cloud mounts
   (`~/Library/CloudStorage`, iCloud `Mobile Documents`) are skipped so the sync
   provider isn't woken.
+- **Version pruning resolves the live install first.** Codex release dirs are
+  only removed once the `current` symlink resolves; if it doesn't, the section
+  aborts rather than guess which tree the `codex` on your `PATH` is running from.
 - **Force-confirm sections** always prompt before deleting, even with `--yes`,
   because they're expensive to rebuild (large model re-downloads, LSP servers).
 - **Deliberately never touched:** installed toolchains, editor extensions,

@@ -475,6 +475,7 @@ fn main() {
         &[".claude/file-history", ".claude/backups"],
     );
     reg.claude_versions();
+    reg.codex_versions();
     reg.copilot();
     reg.section(
         "Claude Code plugins",
@@ -489,7 +490,10 @@ fn main() {
     reg.section_silent(
         "opencode logs",
         "opencode logs + captured tool output (transient)",
-        &[".local/share/opencode/log", ".local/share/opencode/tool-output"],
+        &[
+            ".local/share/opencode/log",
+            ".local/share/opencode/tool-output",
+        ],
     );
 
     reg.group("Shell & terminal");
@@ -563,7 +567,9 @@ fn main() {
 
     // ─── summary ───
     ui::emitln("");
-    ui::emitln(&format!("{BOLD}════════════════════════════════════════{RESET}"));
+    ui::emitln(&format!(
+        "{BOLD}════════════════════════════════════════{RESET}"
+    ));
     if dry_run {
         ui::emitln(&format!(
             "{YELLOW}{BOLD}Dry-run total: {} would be freed{RESET}",
@@ -573,7 +579,10 @@ fn main() {
             "{DIM}Re-run without --dry-run to actually clean.{RESET}"
         ));
     } else {
-        ui::emitln(&format!("{BOLD}{GREEN}Total reclaimed: {}{RESET}", human(total)));
+        ui::emitln(&format!(
+            "{BOLD}{GREEN}Total reclaimed: {}{RESET}",
+            human(total)
+        ));
     }
     ui::emitln("");
 

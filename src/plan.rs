@@ -473,9 +473,7 @@ pub fn scan_zed_history() -> Plan {
         ));
     }
     let opts = SectionOpts {
-        warn: Some(
-            "quit Zed first; also forgets saved window layouts / open tabs per project",
-        ),
+        warn: Some("quit Zed first; also forgets saved window layouts / open tabs per project"),
         force_confirm: true,
         silent_if_empty: false,
     };
@@ -623,6 +621,69 @@ pub fn scan_claude_versions() -> Plan {
     }
 }
 
+/// Superseded Codex standalone releases in `~/.codex/packages/standalone/releases`.
+///
+/// Codex self-updates by unpacking each release into its own
+/// `<version>-<triple>` dir and repointing the `current` symlink at it; the
+/// previous tree is left behind (~280 MB per update). The live release is
+/// whatever `current` resolves to, so it is resolved first and anything that
+/// fails to resolve aborts the section rather than guessing — deleting the
+/// wrong dir would break the `codex` on `PATH`. `auto-update-version` names the
+/// release the updater considers installed; it is kept too, so a pending
+/// self-update can't find its own tree missing.
+pub fn scan_codex_versions() -> Plan {
+    let base = home().join(".codex/packages/standalone");
+    if !base.join("releases").is_dir() {
+        // Codex may simply not be installed — stay silent.
+        return Plan::empty(String::new());
+    }
+    let Some(victims) = codex_stale_releases(&base) else {
+        let mut out = String::new();
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
+            "{BOLD}{CYAN}[Codex versions]{RESET} older releases in ~/.codex/packages/standalone/releases"
+        );
+        let _ = writeln!(
+            out,
+            "  {RED}'current' symlink does not resolve — aborting (cannot tell which release is live){RESET}"
+        );
+        return Plan {
+            scan_output: out,
+            ..Plan::empty(String::new())
+        };
+    };
+
+    scan_section(
+        "Codex versions",
+        "superseded Codex standalone releases (keeps the live one; re-downloaded only if you roll back)",
+        SectionOpts {
+            silent_if_empty: true,
+            ..Default::default()
+        },
+        victims,
+    )
+}
+
+/// Release dirs under `<base>/releases` that no longer back a live Codex.
+///
+/// `None` means "refuse to decide": `current` did not resolve, so no release can
+/// be proven stale. The two kept names are `current`'s target and whatever
+/// `auto-update-version` records.
+fn codex_stale_releases(base: &std::path::Path) -> Option<Vec<PathBuf>> {
+    let current = std::fs::canonicalize(base.join("current")).ok()?;
+    let mut keep: Vec<std::ffi::OsString> = vec![current.file_name()?.to_os_string()];
+    if let Ok(v) = std::fs::read_to_string(base.join("auto-update-version")) {
+        keep.push(std::ffi::OsString::from(v.trim()));
+    }
+    Some(
+        child_entries(&base.join("releases"))
+            .filter(|p| p.is_dir())
+            .filter(|p| p.file_name().is_some_and(|n| !keep.iter().any(|k| k == n)))
+            .collect(),
+    )
+}
+
 /// Source root scanned for regenerable per-project build output. Everything the
 /// user develops lives under `~/Dev`; nothing outside it is ever walked.
 const PROJECT_ROOT: &str = "Dev";
@@ -679,7 +740,11 @@ fn scan_simulator_caches_in(root: &std::path::Path, booted: &[String]) -> Plan {
     }
     let devices: Vec<PathBuf> = child_entries(root)
         .filter(|d| d.is_dir())
-        .filter(|d| !booted.iter().any(|u| d.file_name().is_some_and(|n| n == u.as_str())))
+        .filter(|d| {
+            !booted
+                .iter()
+                .any(|u| d.file_name().is_some_and(|n| n == u.as_str()))
+        })
         .collect();
     if devices.is_empty() {
         return Plan::empty(String::new());
@@ -706,7 +771,10 @@ fn scan_simulator_caches_in(root: &std::path::Path, booted: &[String]) -> Plan {
         if dev_total > 0 {
             total += dev_total;
             // The UDID alone identifies the device; the full path is 100+ chars.
-            let udid = dev.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let udid = dev
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
             per_device.push((dev_total, udid));
         }
     }
@@ -968,6 +1036,27 @@ fn darwin_user_cache_dir() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    /// Only the releases that back neither `current` nor `auto-update-version`
+    /// are stale; an unresolvable `current` yields `None` so nothing is deleted.
+    #[test]
+    fn codex_stale_releases_keeps_current_and_pending_update() {
+        let td = tempfile::tempdir().unwrap();
+        let base = td.path();
+        let rel = base.join("releases");
+        for v in ["0.153.0-triple", "0.154.0-triple", "0.155.1-triple"] {
+            std::fs::create_dir_all(rel.join(v)).unwrap();
+        }
+        // No `current` yet: refuse to decide.
+        assert!(codex_stale_releases(base).is_none());
+
+        std::os::unix::fs::symlink(rel.join("0.155.1-triple"), base.join("current")).unwrap();
+        std::fs::write(base.join("auto-update-version"), "0.154.0-triple\n").unwrap();
+
+        let stale = codex_stale_releases(base).unwrap();
+        assert_eq!(stale.len(), 1);
+        assert_eq!(stale[0].file_name().unwrap(), "0.153.0-triple");
+    }
+
     #[test]
     fn extract_udid_picks_the_udid_not_the_state() {
         let line = "iPhone 12 (0AD6BC38-6AEA-478E-82FB-3E5E020C2317) (Shutdown) (unavailable, runtime profile not found)";
@@ -1073,7 +1162,11 @@ mod tests {
     #[test]
     fn simulator_scratch_empty_when_nothing_regenerable() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("AAAAAAAA-0000-0000-0000-000000000000/data/Containers/Data")).unwrap();
+        std::fs::create_dir_all(
+            dir.path()
+                .join("AAAAAAAA-0000-0000-0000-000000000000/data/Containers/Data"),
+        )
+        .unwrap();
         assert!(scan_simulator_caches_in(dir.path(), &[]).empty);
     }
 

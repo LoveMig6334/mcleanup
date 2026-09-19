@@ -6,10 +6,10 @@ use std::time::Instant;
 
 use crate::execute::{Outcome, execute};
 use crate::plan::{
-    Plan, SectionOpts, paths, scan_brew, scan_claude_versions, scan_container_caches,
-    scan_contents_of, scan_copilot, scan_darwin_cache, scan_dsstore, scan_http_storages,
-    scan_next_build, scan_npm, scan_nvim, scan_project_scratch, scan_section, scan_simctl_prune,
-    scan_simulator_caches, scan_zed_history, scan_zed_languages,
+    Plan, SectionOpts, paths, scan_brew, scan_claude_versions, scan_codex_versions,
+    scan_container_caches, scan_contents_of, scan_copilot, scan_darwin_cache, scan_dsstore,
+    scan_http_storages, scan_next_build, scan_npm, scan_nvim, scan_project_scratch, scan_section,
+    scan_simctl_prune, scan_simulator_caches, scan_zed_history, scan_zed_languages,
 };
 use crate::progress::Tracker;
 use crate::ui::{self, DIM, RESET, group};
@@ -126,6 +126,9 @@ impl Registry {
     }
     pub fn claude_versions(&mut self) {
         self.push("Claude versions", Box::new(scan_claude_versions));
+    }
+    pub fn codex_versions(&mut self) {
+        self.push("Codex versions", Box::new(scan_codex_versions));
     }
     pub fn dsstore(&mut self) {
         self.push(".DS_Store", Box::new(scan_dsstore));
@@ -274,8 +277,9 @@ fn run_early(
 
     // Partition scans into dedicated externals (pinned lanes) and the pool.
     // `partition` preserves registration order within each side.
-    let (dedicated, pool_scans): (Vec<_>, Vec<_>) =
-        scans.into_iter().partition(|(id, _, _)| ext_ids.contains(id));
+    let (dedicated, pool_scans): (Vec<_>, Vec<_>) = scans
+        .into_iter()
+        .partition(|(id, _, _)| ext_ids.contains(id));
     let pinned = dedicated.len();
 
     // Lane tags: pinned externals first (in registration order), then the pool.

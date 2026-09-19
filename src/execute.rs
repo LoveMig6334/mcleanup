@@ -106,9 +106,7 @@ fn execute_zed_history(
     if dry_run {
         return Outcome {
             freed: estimate,
-            line: format!(
-                "  {YELLOW}[dry-run] would forget {rows} recent projects{dock}{RESET}"
-            ),
+            line: format!("  {YELLOW}[dry-run] would forget {rows} recent projects{dock}{RESET}"),
         };
     }
     let mut cleared = 0usize;
@@ -434,7 +432,10 @@ mod tests {
             rows: 2,
         };
         let out = execute(plan_with(action, 7), true);
-        assert!(out.line.contains("would forget 2 recent projects + Dock recents"));
+        assert!(
+            out.line
+                .contains("would forget 2 recent projects + Dock recents")
+        );
         assert_eq!(count(&db, "workspaces"), 2, "dry-run must not mutate");
         assert!(sfl.exists());
 
